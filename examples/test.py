@@ -50,10 +50,11 @@ def main():
     # print points.T[0]
     # plt.scatter(X.T[0][:num_points], X.T[1][:num_points] ,c = y[:num_points],cmap=plt.cm.Paired)
     # plt.show()
-    svm.train(X,y,'linear',heuristicMethod = 0)
-    # print svm.rho
-    # print svm. training_alpha
-    # print svm.final_alpha
-    # print svm.support_vectors
+    svm.train(X,y,'gaussian',gamma = 0.7,heuristicMethod = 1)
+    print svm.rho
+    print svm. training_alpha
+    print svm.final_alpha
+    print svm.support_vectors
+    print svm.iterations
 if __name__ == "__main__":
     main()

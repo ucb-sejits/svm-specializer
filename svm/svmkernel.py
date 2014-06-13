@@ -101,36 +101,60 @@ class SVMKernel(object):
         #region First step/half-iteration
         # Initializes 2 values in the currently-zero training_alpha array
 
+        # copied from below
+        # save previous alphas
+        alpha2old = self.training_alpha[self.iLow]
+        alpha1old = self.training_alpha[self.iHigh]
+        alphadiff = alpha2old - alpha1old
+        lowLabel = self.labels[self.iLow]
+        sign = self.labels[self.iHigh]*lowLabel
 
+        # find lower and upper bounds L and H
+        if (sign < 0):
+            if(alphadiff < 0):
+                L = 0
+                H = self.cost + alphadiff
+            else:
+                L = alphadiff
+                H = self.cost
+        else:
+            alphaSum = alpha2old + alpha1old
+            if alphaSum < self.cost:
+                L = 0
+                H = alphaSum
+            else:
+                L = self.cost - alphaSum
+                H = self.cost
+
+        # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
         eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
         phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
         eta -= 2.0 * phiAB
-        alpha2diff = self.labels[self.iLow]*gap/eta
-        alpha2new = self.training_alpha[self.iLow] + alpha2diff
+        if eta > 0:
+            #compute
+            alpha2new = alpha2old + self.labels[self.iLow]*gap/eta
+            #clip
+            if (alpha2new < L):
+                alpha2new = L
+            elif(alpha2new > H):
+                alpha2new = H
+        else: # alpha2new can now only assume endpoints or alpha2old (this is rare)
+            slope = lowLabel * gap
+            delta = slope * (H-L)
+            if delta > 0:
+                if slope > 0:
+                    alpha2new = H
+                else:
+                    alpha2new = L
+            else:
+                alpha2new = alpha2old
 
-        #clip alpha2new
-        if alpha2new > self.Ce:
-            alpha2diff -= alpha2new - self.Ce
-            alpha2new = self.Ce
-        elif alpha2new < self.epsilon:
-            alpha2diff -= alpha2new - self.epsilon
-            alpha2new = self.epsilon
-
-        #compute alpha1new
-        alpha1diff = self.labels[self.iLow]*self.labels[self.iHigh]*alpha2diff
-
-        alpha1new = self.training_alpha[self.iHigh]+alpha1diff
-
-        #clip alpha1new
-        if alpha1new > self.Ce:
-            alpha1diff -= alpha1new - self.Ce
-            alpha1new = self.Ce
-        elif alpha1new < self.epsilon:
-            alpha1diff -= alpha1new - self.epsilon
-            alpha1new = self.epsilon
-        # update alpha vector
+        alpha2diff = alpha2new - alpha2old
+        alpha1diff = -sign*alpha2diff
+        alpha1new = alpha1old + alpha1diff
         self.training_alpha[self.iHigh] = alpha1new
         self.training_alpha[self.iLow] = alpha2new
+        #endregion
 
         #To clear things up, training_alpha[self.iLow] -> alpha2 and training_alpha[self.iHigh] ->alpha1
         #endregion
@@ -174,7 +198,8 @@ class SVMKernel(object):
                         self.iHigh = i
             #endregion
 
-            #region compute bLow = max(F[i]: i in I_Low); compute self.iLow = argMax(F[i]: i in I_Low)
+            # region compute bLow and iHigh
+            #  bLow = max(F[i]: i in I_Low); compute self.iLow = argMax(F[i]: i in I_Low)
             maxDeltaF = None
             bLow = None
             for i in range(self.nPoints):
@@ -199,49 +224,71 @@ class SVMKernel(object):
                                 if maxDeltaF is None or deltaF > maxDeltaF:
                                     self.iLow = i
                                     maxDeltaF = deltaF
+            #endregion
 
+
+            #region Update alphas
+
+            #save previous alphas
             gap = bHigh - bLow
+            alpha2old = self.training_alpha[self.iLow]
+            alpha1old = self.training_alpha[self.iHigh]
+            alphadiff = alpha2old - alpha1old
+            lowLabel = self.labels[self.iLow]
+            sign = self.labels[self.iHigh]*lowLabel
 
-            # compute self.iLow if second order heuristic
-            if not firstOrder:
-                pass
+            # find lower and upper bounds L and H
+            if (sign < 0):
+                if(alphadiff < 0):
+                    L = 0
+                    H = self.cost + alphadiff
+                else:
+                    L = alphadiff
+                    H = self.cost
+            else:
+                alphaSum = alpha2old + alpha1old
+                if alphaSum < self.cost:
+                    L = 0
+                    H = alphaSum
+                else:
+                    L = self.cost - alphaSum
+                    H = self.cost
 
+            # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
             eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
             phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
             eta -= 2.0 * phiAB
-            alpha2diff = self.labels[self.iLow]*gap/eta
-            alpha2new = self.training_alpha[self.iLow] + alpha2diff
+            if eta > 0:
+                #compute
+                alpha2new = alpha2old + self.labels[self.iLow]*gap/eta
+                #clip
+                if (alpha2new < L):
+                    alpha2new = L
+                elif(alpha2new > H):
+                    alpha2new = H
+            else: # alpha2new can now only assume endpoints or alpha2old (this is rare)
+                slope = lowLabel * gap
+                delta = slope * (H-L)
+                if delta > 0:
+                    if slope > 0:
+                        alpha2new = H
+                    else:
+                        alpha2new = L
+                else:
+                    alpha2new = alpha2old
 
-            #clip alpha2new
-            if alpha2new > self.Ce:
-                alpha2diff -= alpha2new - self.Ce
-                alpha2new = self.Ce
-            elif alpha2new < self.epsilon:
-                alpha2diff -= alpha2new - self.epsilon
-                alpha2new = self.epsilon
-
-            #compute alpha1new
-            alpha1diff = self.labels[self.iLow]*self.labels[self.iHigh]*alpha2diff
-
-            alpha1new = self.training_alpha[self.iHigh]+alpha1diff
-            #clip alpha1new
-            if alpha1new > self.Ce:
-                alpha1diff -= alpha1new - self.Ce
-                alpha1new = self.Ce
-            elif alpha1new < self.epsilon:
-                alpha1diff -= alpha1new - self.epsilon
-                alpha1new = self.epsilon
-
+            alpha2diff = alpha2new - alpha2old
+            alpha1diff = -sign*alpha2diff
+            alpha1new = alpha1old + alpha1diff
             self.training_alpha[self.iHigh] = alpha1new
             self.training_alpha[self.iLow] = alpha2new
-
+            #endregion
             iteration += 1
 
             # print self.F
-            # print bHigh
-            # print bLow
             # print self.labels
             # print self.training_alpha
+            # print gap
 
         # save results
         self.rho = (bHigh + bHigh)/2
@@ -257,6 +304,7 @@ class SVMKernel(object):
                 self.support_vectors[index] = self.input_data[k]
                 self.final_alpha[index] = self.training_alpha[k]
                 index += 1
+        self.iterations = iteration
                 
 
     def linearSelf(self, vecA):
@@ -277,9 +325,9 @@ class SVMKernel(object):
     def gaussian(self, vecA, vecB):
         accumulant = 0.0
         for d in range(self.dFeatures):
-            diff = vecA[d] * vecB[d]
+            diff = vecA[d] - vecB[d]
             accumulant += diff * diff
-        return exp(self.params["gamma"] * accumulant)
+        return exp(- self.params["gamma"] * accumulant)
 
     def polynomialSelf(self, vecA):
         accumulant = 0.0
