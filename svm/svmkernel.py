@@ -44,19 +44,22 @@ class SVMKernel(object):
         self.gamma = gamma
         self.coef0 = coef0
         self.degree = (int)(degree) # degree should be integer
-        self.params = {"gamma": gamma, "coef0": coef0, "degree": degree}
+        self.kernel_type = kernel_type
+        self.params = {"gamma": gamma, "coef0": coef0, "degree": degree, "dFeatures": dFeatures}
 
     def __init__(self):
         self.nPoints = 0
         self.dFeatures = 0
-        self.nSV = 0
+
         self.input_data = None
         self.labels = None
         self.training_alpha = None
 
         self.support_vectors = None
-        self.final_alpha = None
+        self.signed_alpha = None
         self.rho = None
+        self.nSV = 0
+        self.iterations = 0
 
     def train(self, input_data, labels, kernel_type,
               gamma = None, coef0 = None, degree = None,
@@ -86,53 +89,56 @@ class SVMKernel(object):
 
         self.KernelDiag = np.zeros(self.nPoints, dtype=np.float32) # self.KernelDiag[i] = K(x_i,x_i)
         self.F = np.zeros(self.nPoints, dtype=np.float32) # error array
-        self.pytrain()
+        result = self.pytrain(self.input_data,self.labels,self.F, self.training_alpha, self.KernelDiag,
+                     self.iHigh, self.iLow, self.epsilon, self.Ce, self.cost, self.tolerance,
+                     self.heuristic, self.nPoints, self.dFeatures, self.params)
+        self.rho, self.nSV, self.support_vectors, self.signed_alpha, self.iterations = result
 
-    def pytrain(self):
+    def pytrain(self, input_data, labels, F, training_alpha, KernelDiag, iHigh, iLow, epsilon, Ce, cost, tolerance, heuristic, nPoints, dFeatures, params):
         #initialize
-        progress = Controller(2.0, self.heuristic, 64, self.nPoints)
+        progress = Controller(2.0, heuristic, 64, nPoints)
         bLow = 1.0
         bHigh = -1.0
         gap = bHigh - bLow
-        for i in range(self.nPoints):
-            self.KernelDiag[i] = self.kernelFuncSelf(self.input_data[i])
-            self.F[i] = -self.labels[i]
+        for i in range(nPoints):
+            KernelDiag[i] = self.kernelFuncSelf(input_data[i], params)
+            F[i] = -labels[i]
 
         #region First step/half-iteration
         # Initializes 2 values in the currently-zero training_alpha array
 
         # copied from below
         # save previous alphas
-        alpha2old = self.training_alpha[self.iLow]
-        alpha1old = self.training_alpha[self.iHigh]
+        alpha2old = training_alpha[iLow]
+        alpha1old = training_alpha[iHigh]
         alphadiff = alpha2old - alpha1old
-        lowLabel = self.labels[self.iLow]
-        sign = self.labels[self.iHigh]*lowLabel
+        lowLabel = labels[iLow]
+        sign = labels[iHigh]*lowLabel
 
         # find lower and upper bounds L and H
         if (sign < 0):
             if(alphadiff < 0):
                 L = 0
-                H = self.cost + alphadiff
+                H = cost + alphadiff
             else:
                 L = alphadiff
-                H = self.cost
+                H = cost
         else:
             alphaSum = alpha2old + alpha1old
-            if alphaSum < self.cost:
+            if alphaSum < cost:
                 L = 0
                 H = alphaSum
             else:
-                L = self.cost - alphaSum
-                H = self.cost
+                L = cost - alphaSum
+                H = cost
 
         # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
-        eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
-        phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
+        eta = KernelDiag[iLow] + KernelDiag[iHigh]
+        phiAB = self.kernelFunc(input_data[iHigh], input_data[iLow], params)
         eta -= 2.0 * phiAB
         if eta > 0:
             #compute
-            alpha2new = alpha2old + self.labels[self.iLow]*gap/eta
+            alpha2new = alpha2old + labels[iLow]*gap/eta
             #clip
             if (alpha2new < L):
                 alpha2new = L
@@ -152,8 +158,8 @@ class SVMKernel(object):
         alpha2diff = alpha2new - alpha2old
         alpha1diff = -sign*alpha2diff
         alpha1new = alpha1old + alpha1diff
-        self.training_alpha[self.iHigh] = alpha1new
-        self.training_alpha[self.iLow] = alpha2new
+        training_alpha[iHigh] = alpha1new
+        training_alpha[iLow] = alpha2new
         #endregion
 
         #To clear things up, training_alpha[self.iLow] -> alpha2 and training_alpha[self.iHigh] ->alpha1
@@ -163,20 +169,21 @@ class SVMKernel(object):
         iteration = 0
         while True:
 
-            if bLow <= bHigh + 2*self.tolerance:
+            if bLow <= bHigh + 2*tolerance:
                 break #Convergence!
             if (iteration & 0x7ff) == 0:
-                self.heuristic = progress.getMethod()
+                heuristic = progress.getMethod()
             if (iteration & 0x7f) == 0:
                 print ("Iteration: {}, gap: {}").format(iteration, bLow - bHigh)
-            if self.heuristic == 0:
+            if heuristic == 0:
                 firstOrder = True
             else:
                 firstOrder = False
+
             # Update F
-            for i in range(self.nPoints):
-                self.F[i] += self.labels[self.iHigh]*alpha1diff*self.kernelFunc(self.input_data[i],self.input_data[self.iHigh]) +\
-                        self.labels[self.iLow]*alpha2diff*self.kernelFunc(self.input_data[i],self.input_data[self.iLow])
+            for i in range(nPoints):
+                F[i] += labels[iHigh]*alpha1diff*self.kernelFunc(input_data[i],input_data[iHigh], params) +\
+                        labels[iLow]*alpha2diff*self.kernelFunc(input_data[i],input_data[iLow], params)
 
 
 
@@ -185,44 +192,44 @@ class SVMKernel(object):
             #region compute bHigh and self.iHigh. self.iHigh = argMin(F[i]: i in I_High), bHigh = min(F[i]: i in I_High)
             bHigh = None
 
-            for i in range(self.nPoints):
-                alpha = self.training_alpha[i]
-                label = self.labels[i]
+            for i in range(nPoints):
+                alpha = training_alpha[i]
+                label = labels[i]
                 #i.e. if i in I_High
-                if (self.epsilon < alpha < self.Ce) or \
+                if (epsilon < alpha < Ce) or \
                         (label > 0 and alpha <= self.epsilon) or \
                         (label < 0 and alpha >= self.Ce):
-                    f = self.F[i]
+                    f = F[i]
                     if bHigh is None or f < bHigh:
                         bHigh = f
-                        self.iHigh = i
+                        iHigh = i
             #endregion
 
             # region compute bLow and iHigh
             #  bLow = max(F[i]: i in I_Low); compute self.iLow = argMax(F[i]: i in I_Low)
             maxDeltaF = None
             bLow = None
-            for i in range(self.nPoints):
-                alpha = self.training_alpha[i]
-                label = self.labels[i]
+            for i in range(nPoints):
+                alpha = training_alpha[i]
+                label = labels[i]
                 # i.e., if i in I_Low
-                if (self.epsilon < alpha < self.Ce) or \
-                        (label < 0 and alpha <= self.epsilon) or \
-                        (label > 0 and alpha >= self.Ce):
-                    f = self.F[i]
+                if (epsilon < alpha < Ce) or \
+                        (label < 0 and alpha <= epsilon) or \
+                        (label > 0 and alpha >= Ce):
+                    f = F[i]
                     if bLow is None or f > bLow :
                         bLow = f
                         if firstOrder:
-                            self.iLow = i
+                            iLow = i
                         else:  # second order
-                            beta = bHigh - self.F[i]
+                            beta = bHigh - F[i]
                             if beta < 0:
-                                eta = self.KernelDiag[self.iHigh] + self.KernelDiag[i]
-                                phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[i])
+                                eta = KernelDiag[iHigh] + KernelDiag[i]
+                                phiAB = self.kernelFunc(input_data[iHigh], input_data[i], params)
                                 eta -= 2.0 * phiAB
                                 deltaF = (beta ** 2)/eta
                                 if maxDeltaF is None or deltaF > maxDeltaF:
-                                    self.iLow = i
+                                    iLow = i
                                     maxDeltaF = deltaF
             #endregion
 
@@ -231,42 +238,42 @@ class SVMKernel(object):
 
             #save previous alphas
             gap = bHigh - bLow
-            alpha2old = self.training_alpha[self.iLow]
-            alpha1old = self.training_alpha[self.iHigh]
+            alpha2old = training_alpha[iLow]
+            alpha1old = training_alpha[iHigh]
             alphadiff = alpha2old - alpha1old
-            lowLabel = self.labels[self.iLow]
-            sign = self.labels[self.iHigh]*lowLabel
+            lowLabel = labels[iLow]
+            sign = labels[iHigh]*lowLabel
 
             # find lower and upper bounds L and H
             if (sign < 0):
                 if(alphadiff < 0):
                     L = 0
-                    H = self.cost + alphadiff
+                    H = cost + alphadiff
                 else:
                     L = alphadiff
-                    H = self.cost
+                    H = cost
             else:
                 alphaSum = alpha2old + alpha1old
-                if alphaSum < self.cost:
+                if alphaSum < cost:
                     L = 0
                     H = alphaSum
                 else:
-                    L = self.cost - alphaSum
-                    H = self.cost
+                    L = cost - alphaSum
+                    H = cost
 
             # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
-            eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
-            phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
+            eta = KernelDiag[iLow] + KernelDiag[iHigh]
+            phiAB = self.kernelFunc(input_data[iHigh], input_data[iLow], params)
             eta -= 2.0 * phiAB
             if eta > 0:
                 #compute
-                alpha2new = alpha2old + self.labels[self.iLow]*gap/eta
+                alpha2new = alpha2old + labels[iLow]*gap/eta
                 #clip
                 if (alpha2new < L):
                     alpha2new = L
                 elif(alpha2new > H):
                     alpha2new = H
-            else: # alpha2new can now only assume endpoints or alpha2old (this is rare)
+            else: # else alpha2new can only assume endpoints or alpha2old (this is rare)
                 slope = lowLabel * gap
                 delta = slope * (H-L)
                 if delta > 0:
@@ -280,8 +287,8 @@ class SVMKernel(object):
             alpha2diff = alpha2new - alpha2old
             alpha1diff = -sign*alpha2diff
             alpha1new = alpha1old + alpha1diff
-            self.training_alpha[self.iHigh] = alpha1new
-            self.training_alpha[self.iLow] = alpha2new
+            training_alpha[iHigh] = alpha1new
+            training_alpha[iLow] = alpha2new
             #endregion
             iteration += 1
 
@@ -291,67 +298,85 @@ class SVMKernel(object):
             # print gap
 
         # save results
-        self.rho = (bHigh + bHigh)/2
-        self.nSV = 0
-        for k in range(self.nPoints):
-            if self.training_alpha[k] > self.epsilon:
-                self.nSV += 1
-        self.support_vectors = np.empty((self.nSV,self.dFeatures),dtype = np.float32)
-        self.final_alpha = np.empty(self.nSV, dtype=np.float32)
+        rho = (bHigh + bHigh)/2
+        nSV = 0
+        for k in range(nPoints):
+            if training_alpha[k] > epsilon:
+                nSV += 1
+        support_vectors = np.empty((nSV,dFeatures),dtype = np.float32)
+        signed_alpha = np.empty(nSV, dtype=np.float32)
         index = 0
-        for k in range(self.nPoints):
-            if self.training_alpha[k] > self.epsilon:
-                self.support_vectors[index] = self.input_data[k]
-                self.final_alpha[index] = self.training_alpha[k]
+        for k in range(nPoints):
+            if training_alpha[k] > epsilon:
+                support_vectors[index] = input_data[k]
+                signed_alpha[index] = labels[k] * training_alpha[k]
                 index += 1
-        self.iterations = iteration
-                
+        return rho, nSV, support_vectors, signed_alpha, iteration
 
-    def linearSelf(self, vecA):
+    def classify(self, points_in):
+        numPoints = points_in.shape[0]
+        print 'Classification started: {} points to classify.'.format(numPoints)
+
+        labels_out = np.empty(numPoints, dtype = np.int8)
+        sum = 0
+        for i in range(numPoints):
+            if i % 10000 == 0:
+                print '{} points classified'.format(i)
+            sum = 0
+            for j in range(self.nSV):
+                sum += self.signed_alpha[j] * self.kernelFunc(points_in[i], self.support_vectors[j] , self.params)
+            if sum - self.rho > 0:
+                labels_out[i] = 1
+            else:
+                labels_out[i] = -1
+        return labels_out
+
+
+    def linearSelf(self, vecA, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecA[d]
         return accumulant
 
-    def linear(self, vecA, vecB):
+    def linear(self, vecA, vecB, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecB[d]
         return accumulant
 
-    def gaussianSelf(self, vecA):
+    def gaussianSelf(self, vecA, params):
         return 1.0
 
-    def gaussian(self, vecA, vecB):
+    def gaussian(self, vecA, vecB, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             diff = vecA[d] - vecB[d]
             accumulant += diff * diff
-        return exp(- self.params["gamma"] * accumulant)
+        return exp(- params["gamma"] * accumulant)
 
-    def polynomialSelf(self, vecA):
+    def polynomialSelf(self, vecA, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecA[d]
-        return (self.params["gamma"] * accumulant + self.params["coef0"]) ** self.params["degree"]
+        return (params["gamma"] * accumulant + params["coef0"]) ** params["degree"]
 
-    def polynomial(self, vecA, vecB):
+    def polynomial(self, vecA, vecB, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecB[d]
-        return (self.params["gamma"] * accumulant + self.params["coef0"]) ** self.params["degree"]
+        return (params["gamma"] * accumulant + params["coef0"]) ** params["degree"]
 
-    def sigmoidSelf(self, vecA):
+    def sigmoidSelf(self, vecA, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecA[d]
-        return tanh(self.params["gamma"] * accumulant + self.params["coef0"])
+        return tanh(params["gamma"] * accumulant + params["coef0"])
 
-    def sigmoid(self, vecA, vecB):
+    def sigmoid(self, vecA, vecB, params):
         accumulant = 0.0
-        for d in range(self.dFeatures):
+        for d in range(params["dFeatures"]):
             accumulant += vecA[d] * vecB[d]
-        return tanh(self.params["gamma"] * accumulant + self.params["coef0"])
+        return tanh(params["gamma"] * accumulant + params["coef0"])
 
 #incomplete
 class Controller(object):
