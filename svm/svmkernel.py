@@ -1,94 +1,348 @@
 """
 specializer svm
+
+follows algorithm from Catanzaro et al.
 """
 
 from ctree.jit import LazySpecializedFunction
+import os
 import numpy as np
-class SVMKernelParams(object):
-    def __init__(self, kernel_type, N, gamma = None, coef0 = None, degree = None):
-        if gamma is None:
-            self.gamma = 1.0/N
-        if coef0 is None:
-            self.coef0 = 0.0
-        if degree is None:
-            self.degree = 3.0
-
-        # determine kernel type and set the kernel parameters
-        if kernel_type == "linear":
-            self.gamma = 0.0
-            self.coef0 = 0.0
-            self.degree = 0.0
-        elif (kernel_type == "gaussian"):
-            if gamma <= 0:
-                raise Exception("Invalid parameters")
-            self.gamma = gamma
-            self.coef0 = 0.0
-            self.degree = 0.0
-
-        elif kernel_type == "polynomial":
-            if gamma <= 0 or coef0 < 0 or degree < 1.0:
-                raise Exception( "Invalid parameters")
-            self.gamma = gamma
-            self.coef0 = coef0
-            self.degree = degree # TODO: convert to int
-
-        elif kernel_type == "sigmoid":
-            if gamma <= 0 or coef0 < 0 :
-                raise Exception( "Invalid parameters")
-            self.gamma = gamma
-            self.coef0 = coef0
-            self.degree = 0.0
-
-        else:
-            raise Exception( "Unsupported kernel type. Please try one of the following: \
-                  'linear', 'gaussian', 'polynomial', 'sigmoid'")
-
-class SpecializedTrain(LazySpecializedFunction):
-    def __init__(self, kernel, input_data, labels):
-        self.kernel = kernel
-    def args_to_subconfig(self,args):
-        pass
+from math import *
+from random import random
 
 
-
-    def transform(self, ):
-        pass
 
 class SVMKernel(object):
 
-    kernel_types = {'linear','gaussian','polynomial','sigmoid'}
+    
+    def setParams(self, kernel_type, nPoints, dFeatures, gamma = None, coef0 = None, degree = None):
+        self.kernelFuncs = {'linear': self.linear,
+                            'gaussian': self.gaussian,
+                            'polynomial': self.polynomial,
+                            'sigmoid': self.sigmoid}
+        self.kernelFuncsSelf = {'linear': self.linearSelf,
+                            'gaussian': self.gaussianSelf,
+                            'polynomial': self.polynomialSelf,
+                            'sigmoid': self.sigmoidSelf}
+        if kernel_type not in self.kernelFuncs:
+            raise Exception( "Unsupported kernel type. Please try one of the following: \
+                  'linear', 'gaussian', 'polynomial', 'sigmoid'")
+        
+        self.kernelFunc = self.kernelFuncs[kernel_type]
+        self.kernelFuncSelf = self.kernelFuncsSelf[kernel_type]
+        #default params
+        if gamma is None:
+            gamma = 1.0/dFeatures
+        if coef0 is None:
+            coef0 = 0.0
+        if degree is None:
+            degree = 3
+
+        if gamma <= 0 or coef0 < 0 or degree < 1.0:
+            raise Exception( "Invalid parameters")
+        
+        self.gamma = gamma
+        self.coef0 = coef0
+        self.degree = (int)(degree) # degree should be integer
+        self.params = {"gamma": gamma, "coef0": coef0, "degree": degree}
 
     def __init__(self):
-        self.N = 0
-        self.D = 0
+        self.nPoints = 0
+        self.dFeatures = 0
         self.nSV = 0
-        self.svm_params = None
+        self.input_data = None
+        self.labels = None
+        self.training_alpha = None
+
         self.support_vectors = None
-        self.alphas = None
+        self.final_alpha = None
         self.rho = None
 
     def train(self, input_data, labels, kernel_type,
               gamma = None, coef0 = None, degree = None,
               heuristicMethod = None, tolerance = None, cost = None, epsilon = None):
 
-        self.N = input_data.shape[0]
-        self.D = input_data.shape[1]
-
-        training_alpha = np.empty(self.N, dtype=np.float32)
-        result = np.empty(8, dtype=np.float32)
-
-        self.svm_params = SVMKernelParams(kernel_type,self.N,gamma,coef0,degree)
-        self.heuristic = heuristicMethod if heuristicMethod is not None else 3 #Adaptive
+        self.nPoints = input_data.shape[0]
+        self.dFeatures = input_data.shape[1]
+        self.input_data = input_data
+        self.labels = labels
+        self.training_alpha = np.zeros(self.nPoints, dtype=np.float32)
+        self.result = np.zeros(8, dtype=np.float32)
+        
+        self.setParams(kernel_type,self.nPoints, self.dFeatures,gamma,coef0,degree)
+        self.heuristic = heuristicMethod if heuristicMethod is not None else 2 #random
         self.cost = cost if cost is not None else 10.0
         self.tolerance = tolerance if tolerance is not None else 1e-3
         self.epsilon = epsilon if epsilon is not None else 1e-5
+        self.Ce = self.cost - self.tolerance
+        self.iLow =None
+        self.iHigh = None
+        for i in range(self.nPoints):
+            label = labels[i]
+            if self.iLow is None and label == -1:
+                self.iLow = i
+            elif self.iHigh is None and label == 1:
+                self.iHigh = i
 
-    def pytrain(input_data, labels, kernel_type,
-              gamma = None, coef0 = None, degree = None,
-              heuristicMethod = None, tolerance = None, cost = None, epsilon = None):
+        self.KernelDiag = np.zeros(self.nPoints, dtype=np.float32) # self.KernelDiag[i] = K(x_i,x_i)
+        self.F = np.zeros(self.nPoints, dtype=np.float32) # error array
+        self.pytrain()
 
+    def pytrain(self):
+        #initialize
+        progress = Controller(2.0, self.heuristic, 64, self.nPoints)
+        bLow = 1.0
+        bHigh = -1.0
+        gap = bHigh - bLow
+        for i in range(self.nPoints):
+            self.KernelDiag[i] = self.kernelFuncSelf(self.input_data[i])
+            self.F[i] = -self.labels[i]
+
+        #region First step/half-iteration
+        # Initializes 2 values in the currently-zero training_alpha array
+
+
+        eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
+        phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
+        eta -= 2.0 * phiAB
+        alpha2diff = self.labels[self.iLow]*gap/eta
+        alpha2new = self.training_alpha[self.iLow] + alpha2diff
+
+        #clip alpha2new
+        if alpha2new > self.Ce:
+            alpha2diff -= alpha2new - self.Ce
+            alpha2new = self.Ce
+        elif alpha2new < self.epsilon:
+            alpha2diff -= alpha2new - self.epsilon
+            alpha2new = self.epsilon
+
+        #compute alpha1new
+        alpha1diff = self.labels[self.iLow]*self.labels[self.iHigh]*alpha2diff
+
+        alpha1new = self.training_alpha[self.iHigh]+alpha1diff
+
+        #clip alpha1new
+        if alpha1new > self.Ce:
+            alpha1diff -= alpha1new - self.Ce
+            alpha1new = self.Ce
+        elif alpha1new < self.epsilon:
+            alpha1diff -= alpha1new - self.epsilon
+            alpha1new = self.epsilon
+        # update alpha vector
+        self.training_alpha[self.iHigh] = alpha1new
+        self.training_alpha[self.iLow] = alpha2new
+
+        #To clear things up, training_alpha[self.iLow] -> alpha2 and training_alpha[self.iHigh] ->alpha1
+        #endregion
+
+        #Main Loop
+        iteration = 0
+        while True:
+
+            if bLow <= bHigh + 2*self.tolerance:
+                break #Convergence!
+            if (iteration & 0x7ff) == 0:
+                self.heuristic = progress.getMethod()
+            if (iteration & 0x7f) == 0:
+                print ("Iteration: {}, gap: {}").format(iteration, bLow - bHigh)
+            if self.heuristic == 0:
+                firstOrder = True
+            else:
+                firstOrder = False
+            # Update F
+            for i in range(self.nPoints):
+                self.F[i] += self.labels[self.iHigh]*alpha1diff*self.kernelFunc(self.input_data[i],self.input_data[self.iHigh]) +\
+                        self.labels[self.iLow]*alpha2diff*self.kernelFunc(self.input_data[i],self.input_data[self.iLow])
+
+
+
+            # Note: bHigh and bLow are computed using mapReduce in the CUDA version.
+
+            #region compute bHigh and self.iHigh. self.iHigh = argMin(F[i]: i in I_High), bHigh = min(F[i]: i in I_High)
+            bHigh = None
+
+            for i in range(self.nPoints):
+                alpha = self.training_alpha[i]
+                label = self.labels[i]
+                #i.e. if i in I_High
+                if (self.epsilon < alpha < self.Ce) or \
+                        (label > 0 and alpha <= self.epsilon) or \
+                        (label < 0 and alpha >= self.Ce):
+                    f = self.F[i]
+                    if bHigh is None or f < bHigh:
+                        bHigh = f
+                        self.iHigh = i
+            #endregion
+
+            #region compute bLow = max(F[i]: i in I_Low); compute self.iLow = argMax(F[i]: i in I_Low)
+            maxDeltaF = None
+            bLow = None
+            for i in range(self.nPoints):
+                alpha = self.training_alpha[i]
+                label = self.labels[i]
+                # i.e., if i in I_Low
+                if (self.epsilon < alpha < self.Ce) or \
+                        (label < 0 and alpha <= self.epsilon) or \
+                        (label > 0 and alpha >= self.Ce):
+                    f = self.F[i]
+                    if bLow is None or f > bLow :
+                        bLow = f
+                        if firstOrder:
+                            self.iLow = i
+                        else:  # second order
+                            beta = bHigh - self.F[i]
+                            if beta < 0:
+                                eta = self.KernelDiag[self.iHigh] + self.KernelDiag[i]
+                                phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[i])
+                                eta -= 2.0 * phiAB
+                                deltaF = (beta ** 2)/eta
+                                if maxDeltaF is None or deltaF > maxDeltaF:
+                                    self.iLow = i
+                                    maxDeltaF = deltaF
+
+            gap = bHigh - bLow
+
+            # compute self.iLow if second order heuristic
+            if not firstOrder:
+                pass
+
+            eta = self.KernelDiag[self.iLow] + self.KernelDiag[self.iHigh]
+            phiAB = self.kernelFunc(self.input_data[self.iHigh], self.input_data[self.iLow])
+            eta -= 2.0 * phiAB
+            alpha2diff = self.labels[self.iLow]*gap/eta
+            alpha2new = self.training_alpha[self.iLow] + alpha2diff
+
+            #clip alpha2new
+            if alpha2new > self.Ce:
+                alpha2diff -= alpha2new - self.Ce
+                alpha2new = self.Ce
+            elif alpha2new < self.epsilon:
+                alpha2diff -= alpha2new - self.epsilon
+                alpha2new = self.epsilon
+
+            #compute alpha1new
+            alpha1diff = self.labels[self.iLow]*self.labels[self.iHigh]*alpha2diff
+
+            alpha1new = self.training_alpha[self.iHigh]+alpha1diff
+            #clip alpha1new
+            if alpha1new > self.Ce:
+                alpha1diff -= alpha1new - self.Ce
+                alpha1new = self.Ce
+            elif alpha1new < self.epsilon:
+                alpha1diff -= alpha1new - self.epsilon
+                alpha1new = self.epsilon
+
+            self.training_alpha[self.iHigh] = alpha1new
+            self.training_alpha[self.iLow] = alpha2new
+
+            iteration += 1
+
+            # print self.F
+            # print bHigh
+            # print bLow
+            # print self.labels
+            # print self.training_alpha
+
+        # save results
+        self.rho = (bHigh + bHigh)/2
+        self.nSV = 0
+        for k in range(self.nPoints):
+            if self.training_alpha[k] > self.epsilon:
+                self.nSV += 1
+        self.support_vectors = np.empty((self.nSV,self.dFeatures),dtype = np.float32)
+        self.final_alpha = np.empty(self.nSV, dtype=np.float32)
+        index = 0
+        for k in range(self.nPoints):
+            if self.training_alpha[k] > self.epsilon:
+                self.support_vectors[index] = self.input_data[k]
+                self.final_alpha[index] = self.training_alpha[k]
+                index += 1
+                
+
+    def linearSelf(self, vecA):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecA[d]
+        return accumulant
+
+    def linear(self, vecA, vecB):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecB[d]
+        return accumulant
+
+    def gaussianSelf(self, vecA):
+        return 1.0
+
+    def gaussian(self, vecA, vecB):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            diff = vecA[d] * vecB[d]
+            accumulant += diff * diff
+        return exp(self.params["gamma"] * accumulant)
+
+    def polynomialSelf(self, vecA):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecA[d]
+        return (self.params["gamma"] * accumulant + self.params["coef0"]) ** self.params["degree"]
+
+    def polynomial(self, vecA, vecB):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecB[d]
+        return (self.params["gamma"] * accumulant + self.params["coef0"]) ** self.params["degree"]
+
+    def sigmoidSelf(self, vecA):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecA[d]
+        return tanh(self.params["gamma"] * accumulant + self.params["coef0"])
+
+    def sigmoid(self, vecA, vecB):
+        accumulant = 0.0
+        for d in range(self.dFeatures):
+            accumulant += vecA[d] * vecB[d]
+        return tanh(self.params["gamma"] * accumulant + self.params["coef0"])
+
+#incomplete
+class Controller(object):
+    def __init__(self, initialGap, currentMethod, samplingInterval, problemSize):
+        self.progress = [initialGap]
+        self.method = []
+        self.currentMethod = currentMethod
+        if self.currentMethod == 3: #adaptive
+            self.adaptive = True
+            self.currentMethod = 1 #secondorder
+        else:
+            self.adaptive = False
+        self.samplingInterval = samplingInterval
+        self.inspectionPeriod = problemSize/(10.0*samplingInterval)
+
+        self.timeSinceInspection = self.samplingInterval - 2
+        self.beginningOfEpoch = 0
+        self.rates = [0,0]
+        self.currentInspectionPhase = 0
+
+    def addIteration(self, gap):
+        self.progress.append(gap)
+        self.method.append(self.currentMethod)
+
+    def findRate(self):
+        pass
+    def getMethod(self):
+        if not self.adaptive:
+            if self.currentMethod == 2: #random
+                if random() < 0.5:
+                    return 1 #second order
+                else:
+                    return 0 #first order
+            else:
+                return self.currentMethod
+        #TODO: Adaptive Algorithm
 
 
 if __name__ == '__main__':
-    pass
+    os.chdir('../examples')
+    execfile('test.py')
 
