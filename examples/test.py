@@ -66,28 +66,28 @@ def main():
         if y[i] == 0:
             y[i] = -1
     svm = SVMKernel()
-    svm.train(X,y,'polynomial',heuristicMethod = 1)
+    svm.train(X,y,'polynomial',heuristicMethod = 0)
     # print svm.rho
     # print svm.signed_alpha
     # print svm.support_vectors
     # print svm.iterations
     # print svm.nSV
-    title = 'Iris Data Set, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
-        .format(svm.kernel_type, svm.params['gamma'], svm.params['coef0'], svm.params['degree'])
-    plot_svm2d(X,y,svm, title)
-
-    # sample data from pyCASP
-    filename = 'svm_train_2.svm'
-    pointsT2, labelsT2 = read_data(filename)
-    svm.train(pointsT2,labelsT2, 'gaussian', gamma = 2, cost = 1, heuristicMethod = 0)
-    # print svm.rho
-    # print svm.signed_alpha
-    # print svm.support_vectors
-    # print svm.iterations
-    # print svm.nSV
-    title = 'File: {}, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
-        .format(filename, svm.kernel_type, svm.params['gamma'], svm.params['coef0'], svm.params['degree'])
-    plot_svm2d(pointsT2, labelsT2,svm, title)
+    # title = 'Iris Data Set, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
+    #     .format(svm.kernel_type, svm.params['gamma'], svm.params['coef0'], svm.params['degree'])
+    # plot_svm2d(X,y,svm, title)
+    #
+    # # sample data from pyCASP
+    # filename = 'svm_train_2.svm'
+    # pointsT2, labelsT2 = read_data(filename)
+    # svm.train(pointsT2,labelsT2, 'gaussian', gamma = 2, cost = 1, heuristicMethod = 0)
+    # # print svm.rho
+    # # print svm.signed_alpha
+    # # print svm.support_vectors
+    # # print svm.iterations
+    # # print svm.nSV
+    # title = 'File: {}, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
+    #     .format(filename, svm.kernel_type, svm.params['gamma'], svm.params['coef0'], svm.params['degree'])
+    # plot_svm2d(pointsT2, labelsT2,svm, title)
 
 if __name__ == "__main__":
     main()

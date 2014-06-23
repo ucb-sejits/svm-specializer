@@ -3,18 +3,58 @@ specializer svm
 
 follows algorithm from Catanzaro et al.
 """
-
 from ctree.jit import LazySpecializedFunction
 import os
 import numpy as np
 from math import *
 from random import random
+import pyopencl as cl
+from ctree.ocl.nodes import *
+from ctree.templates.nodes import *
+from string import Template
+from ctree.c.nodes import *
+from ctree.types import *
+from ctree.c.types import *
+class OclTrain(LazySpecializedFunction):
+    def __init__(self, kernelFuncName):
+        self.kernelFunc = kernelFuncName
+        super(OclTrain, self).__init__(None,"train")
+    def args_to_subconfig(self, args):
+        conf = ()
+        for arg in args[:3]:
+            conf += ((arg.dtype, arg.ndim, arg.shape),)
+        conf += ((args[-1].dtype, args[-1].ndim, args[-1].shape),)
+        return conf
+    def transform(self, tree, program_config):
+        param_types = []
+        for arg in program_config[0][:-1]:
+            param_types.append(NdPointer(arg[0], arg[1], arg[2]))
+        param_types.extend([Float(), Float(), Float(),Float(),Int(), Int(), Int(),Float(),Float(),Float()])
+        arg = program_config[0][-1]
+        param_types.append(NdPointer(arg[0], arg[1], arg[2]))
 
+        kernelPath = os.path.join(os.getcwd(), "..", "templates","oclkernel.tmpl.c")
+        kernelInserts = {
+            "kernelFunc": SymbolRef(self.kernelFunc),
+        }
+        kernel = OclFile("training_kernel", [
+            FileTemplate(kernelPath, kernelInserts)
+        ])
+
+        wrapperPath = os.path.join(os.getcwd(), "..", "templates","ocltrain.tmpl.c")
+        wrapperInserts = {
+            "kernel_path": kernel.get_generated_path_ref(),
+            "kernelFunc": SymbolRef(self.kernelFunc)
+        }
+        wrapper = CFile("train", [
+            FileTemplate(wrapperPath, wrapperInserts)
+        ])
+        train_typsig = FuncType(Int(), param_types).as_ctype()
+        return Project([kernel, wrapper]), train_typsig
 
 
 class SVMKernel(object):
 
-    
     def setParams(self, kernel_type, nPoints, dFeatures, gamma = None, coef0 = None, degree = None):
         self.kernelFuncs = {'linear': self.linear,
                             'gaussian': self.gaussian,
@@ -48,6 +88,7 @@ class SVMKernel(object):
         self.params = {"gamma": gamma, "coef0": coef0, "degree": degree, "dFeatures": dFeatures}
 
     def __init__(self):
+        self.pythonOnly = False
         self.nPoints = 0
         self.dFeatures = 0
 
@@ -78,28 +119,36 @@ class SVMKernel(object):
         self.tolerance = tolerance if tolerance is not None else 1e-3
         self.epsilon = epsilon if epsilon is not None else 1e-5
         self.Ce = self.cost - self.tolerance
-        self.iLow =None
-        self.iHigh = None
-        for i in range(self.nPoints):
-            label = labels[i]
-            if self.iLow is None and label == -1:
-                self.iLow = i
-            elif self.iHigh is None and label == 1:
-                self.iHigh = i
 
-        self.KernelDiag = np.zeros(self.nPoints, dtype=np.float32) # self.KernelDiag[i] = K(x_i,x_i)
-        self.F = np.zeros(self.nPoints, dtype=np.float32) # error array
-        result = self.pytrain(self.input_data,self.labels,self.F, self.training_alpha, self.KernelDiag,
-                     self.iHigh, self.iLow, self.epsilon, self.Ce, self.cost, self.tolerance,
+
+        if self.pythonOnly == True:
+            self.trainFunc = self.pytrain
+        else:
+            self.trainFunc = self.specializedTrain
+
+        result = self.trainFunc(self.input_data,self.labels, self.training_alpha,
+                     self.epsilon, self.Ce, self.cost, self.tolerance,
                      self.heuristic, self.nPoints, self.dFeatures, self.params)
-        self.rho, self.nSV, self.support_vectors, self.signed_alpha, self.iterations = result
+        self.rho, self.nSV, self.iterations, self.support_vectors, self.signed_alpha = result
 
-    def pytrain(self, input_data, labels, F, training_alpha, KernelDiag, iHigh, iLow, epsilon, Ce, cost, tolerance, heuristic, nPoints, dFeatures, params):
+    def pytrain(self, input_data, labels, training_alpha, epsilon, Ce, cost, tolerance,
+                heuristic, nPoints, dFeatures, params):
         #initialize
+        iLow =None
+        iHigh = None
+        for i in range(nPoints):
+            label = labels[i]
+            if iLow is None and label == -1:
+                iLow = i
+            elif iHigh is None and label == 1:
+                iHigh = i
+
+        F = np.empty(nPoints, dtype= np.float32)
         progress = Controller(2.0, heuristic, 64, nPoints)
         bLow = 1.0
         bHigh = -1.0
         gap = bHigh - bLow
+        KernelDiag = np.zeros(self.nPoints, dtype=np.float32)
         for i in range(nPoints):
             KernelDiag[i] = self.kernelFuncSelf(input_data[i], params)
             F[i] = -labels[i]
@@ -185,8 +234,6 @@ class SVMKernel(object):
                 F[i] += labels[iHigh]*alpha1diff*self.kernelFunc(input_data[i],input_data[iHigh], params) +\
                         labels[iLow]*alpha2diff*self.kernelFunc(input_data[i],input_data[iLow], params)
 
-
-
             # Note: bHigh and bLow are computed using mapReduce in the CUDA version.
 
             #region compute bHigh and self.iHigh. self.iHigh = argMin(F[i]: i in I_High), bHigh = min(F[i]: i in I_High)
@@ -232,7 +279,6 @@ class SVMKernel(object):
                                     iLow = i
                                     maxDeltaF = deltaF
             #endregion
-
 
             #region Update alphas
 
@@ -298,7 +344,7 @@ class SVMKernel(object):
             # print gap
 
         # save results
-        rho = (bHigh + bHigh)/2
+        rho = (bHigh + bLow)/2
         nSV = 0
         for k in range(nPoints):
             if training_alpha[k] > epsilon:
@@ -311,7 +357,25 @@ class SVMKernel(object):
                 support_vectors[index] = input_data[k]
                 signed_alpha[index] = labels[k] * training_alpha[k]
                 index += 1
-        return rho, nSV, support_vectors, signed_alpha, iteration
+        return rho, nSV, iteration, support_vectors, signed_alpha
+
+    def specializedTrain(self, *args):
+        specialized = OclTrain(self.kernel_type)
+        params = args[-1]
+        paramA = params["gamma"]
+        paramB = params["coef0"]
+        paramC = params["degree"]
+        bufferSize = 3 + self.nPoints *(self.dFeatures+ 1)
+        bufferArray = np.zeros(bufferSize, dtype= np.float32)
+        args = args[:-1] + (paramA, paramB, paramC, bufferArray)
+        error = specialized(*args)
+        print error
+        rho = bufferArray[0]
+        nSV = (int)(bufferArray[1])
+        iterations = (int)(bufferArray[2])
+        support_vectors = bufferArray[3:3 + nSV*self.dFeatures].reshape((nSV,self.dFeatures))
+        signed_alpha = bufferArray[3 + nSV*self.dFeatures: 3 +(nSV*self.dFeatures+1)]
+        return rho, nSV, iterations, support_vectors, signed_alpha
 
     def classify(self, points_in):
         numPoints = points_in.shape[0]
@@ -330,7 +394,6 @@ class SVMKernel(object):
             else:
                 labels_out[i] = -1
         return labels_out
-
 
     def linearSelf(self, vecA, params):
         accumulant = 0.0
@@ -413,7 +476,6 @@ class Controller(object):
             else:
                 return self.currentMethod
         #TODO: Adaptive Algorithm
-
 
 if __name__ == '__main__':
     os.chdir('../examples')
