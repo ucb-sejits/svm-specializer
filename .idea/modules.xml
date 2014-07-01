@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/../ctree/.idea/ctree.iml" filepath="$PROJECT_DIR$/../ctree/.idea/ctree.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/svm.iml" filepath="$PROJECT_DIR$/.idea/svm.iml" />
     </modules>
   </component>

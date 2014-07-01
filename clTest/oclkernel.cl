@@ -76,10 +76,10 @@ float sigmoid(__global float *vecA, __global float *vecB, int dFeatures, float p
 }
 
 // runs with global size = npoints + padding, local size = max local size
-void __kernel firstOrderPhaseOne(__global float *input_data, __global float *labels,
+__kernel void firstOrderPhaseOne(__global float *input_data, __global int *labels,
                                 __global float *training_alpha, __global float *F,
                                 __global float *lowFs, __global float *highFs,
-                                __global float *lowIndices, __global float *highIndices,
+                                __global int *lowIndices, __global int *highIndices,
                                 const int nPoints, const int dFeatures,
                                 const float epsilon, const float Ce,
                                 int iHigh, int iLow,
@@ -94,7 +94,7 @@ void __kernel firstOrderPhaseOne(__global float *input_data, __global float *lab
     int lsize = get_local_size(0);
     float alpha;
     float f;
-    float label;
+    int label;
     bool reduceHigh = false;
     bool reduceLow = false;
     if (gid < nPoints){
@@ -120,18 +120,13 @@ void __kernel firstOrderPhaseOne(__global float *input_data, __global float *lab
                 reduceLow = true;
             }
         }
-        printf("%.2f\n",input_data[gid]);
         __global float *vecA = input_data + iHigh * dFeatures;
         __global float *vecB = input_data + iLow * dFeatures;
         __global float *vecC = input_data + gid * dFeatures;
-        printf("Global id: %d\n", gid);
-        printf("Param A: %f\n", paramA);
-        printf("Param B: %f\n", paramB);
-        printf("Param C: %f\n", paramC);
-
         f += labels[iHigh] * alpha1diff * polynomial(vecA,vecC,dFeatures,paramA,paramB,paramC);
         f += labels[iLow] * alpha2diff * polynomial(vecB,vecC,dFeatures,paramA,paramB,paramC);
         F[gid] = f;
+        //printf("%.2f", f);
     }
 
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -145,7 +140,6 @@ void __kernel firstOrderPhaseOne(__global float *input_data, __global float *lab
     }else{
         tempLocalFs[lid] = -FLT_MAX; // !!!!!
     }
-
     barrier(CLK_LOCAL_MEM_FENCE);
 
     for(int offset = lsize/2; offset > 0; offset >>= 1){
@@ -200,7 +194,6 @@ void __kernel firstOrderPhaseOne(__global float *input_data, __global float *lab
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-
     if (lid == 0){
         highIndices[grpid] = tempLocalIndices[0];
         highFs[grpid] = tempLocalFs[0];
@@ -210,13 +203,12 @@ void __kernel firstOrderPhaseOne(__global float *input_data, __global float *lab
 void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *labels,
                                 __global float *training_alpha, __global float *kernelDiag,
                                 __global float *lowFs, __global float *highFs,
-                                __global float *lowIndices, __global float *highIndices, __global float *result,
+                                __global int *lowIndices, __global int *highIndices, __global float *result,
                                 const float cost, const int dFeatures, const int num_foph1_workgroups,
                                 const float paramA, const float paramB, const float paramC,
                                 __local int *tempIndices, __local float *tempFs){
     int lid = get_local_id(0);
     int lsize = get_local_size(0);
-
     // 2nd Reduce: highFs[] w/ size num_foph1_workgroups (large) -> tempFs[] w/ size lsize (small).
     // Load first chunk of highFs into local memory
     if(lid < num_foph1_workgroups){
@@ -230,7 +222,7 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
         for (int i = lid + lsize; i < num_foph1_workgroups; i += lsize){
             float otherf = highFs[i];
             float myf = tempFs[lid];
-            int otheri = highIndices[lid];
+            int otheri = highIndices[i];
             int myi = tempIndices[lid];
             if(myf < otherf){ // !!!!!
                 tempFs[lid] = myf;
@@ -241,7 +233,6 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
             }
         }
     }
-
     barrier(CLK_LOCAL_MEM_FENCE);
 
     // 3rd Reduce (parallel, over single workgroup; this kernel should only be run with one workgroup):
@@ -266,7 +257,6 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
     float bHigh = tempFs[0];
 
 
-
     // 2nd Reduce: highFs[] w/ size num_foph1_workgroups (large) -> tempFs[] w/ size lsize (small).
     // Load first chunk of highFs into local memory
     if(lid < num_foph1_workgroups){
@@ -280,7 +270,7 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
         for (int i = lid + lsize; i < num_foph1_workgroups; i += lsize){
             float otherf = lowFs[i];
             float myf = tempFs[lid];
-            int otheri = lowIndices[lid];
+            int otheri = lowIndices[i];
             int myi = tempIndices[lid];
             if(myf > otherf){ // !!!!!
                 tempFs[lid] = myf;
@@ -312,14 +302,16 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
+
+
     int iLow = tempIndices[0];
     float bLow = tempFs[0];
-
     // update alpha using single thread
     if (lid == 0){
         float gap = bHigh - bLow;
 
         // do the first half iteration
+
         float alpha2old = training_alpha[iLow];
         float alpha1old = training_alpha[iHigh];
         float alphadiff = alpha2old - alpha1old;
@@ -388,6 +380,13 @@ void __kernel firstOrderPhaseTwo(__global float *input_data, __global float *lab
         alpha1new = alpha1old + alpha1diff;
         training_alpha[iHigh] = alpha1new;
         training_alpha[iLow] = alpha2new;
+        printf("iHigh: %d\n", iHigh );
+        printf("iLow: %d\n", iLow );
+        printf("alpha2new: %.2f\n", alpha2new );
+
+        for(int i = 0; i < 50; i++){
+            printf("Alpha[%d]: %.2f\n",i, training_alpha[i]);
+        }
 
         result[0] = bLow;
         result[1] = bHigh;

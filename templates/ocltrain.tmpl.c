@@ -14,353 +14,89 @@
 #include <CL/cl.h>
 #endif
 
-// Kernel Functions
-float linearSelf(float *vecA, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        float value = vecA[i];
-        accumulant += value * value;
-    }
-    return accumulant;
-}
-float linear(float *vecA, float *vecB, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        accumulant += vecA[i] * vecB[i];
-    }
-    return accumulant;
-}
-float gaussianSelf(float *vecA, int dFeatures, float paramA, float paramB, float paramC){
-    return 1.0f;
-}
-float gaussian(float *vecA, float *vecB, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        float diff = vecA[i] - vecB[i];
-        accumulant += diff * diff;
-    }
-    return exp(- paramA * accumulant);
-}
-float polynomialSelf(float *vecA, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        float value = vecA[i];
-        accumulant += value * value;
-    }
-    accumulant = accumulant * paramA + paramB;
-    float result = accumulant;
-    for (float degree = 2.0f; degree <= paramC; degree = degree + 1.0f) {
-        result *= accumulant;
-    }
-    return result;
-}
-float polynomial(float *vecA, float *vecB, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        accumulant += vecA[i] * vecB[i];
-    }
-    accumulant = accumulant * paramA + paramB;
-    float result = accumulant;
-    for (float degree = 2.0f; degree <= paramC; degree = degree + 1.0f) {
-        result *= accumulant;
-    }
-    return result;
-}
-float sigmoidSelf(float *vecA, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        float value = vecA[i];
-        accumulant += value * value;
-    }
-    accumulant = accumulant * paramA + paramB;
-    return tanh(accumulant);
-}
-float sigmoid(float *vecA, float *vecB, int dFeatures, float paramA, float paramB, float paramC){
-    int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        accumulant += vecA[i] * vecB[i];
-    }
-    accumulant = accumulant * paramA + paramB;
-    return tanh(accumulant);
-}
+void getResults(cl_command_queue queue, cl_mem d_results, float *results, float* bLow, float *bHigh,
+                int *iLow, int *iHigh, float *alpha1diff, float *alpha2diff);
 
-int train(float *input_data, float *labels, float *training_alpha,
+int train(float *input_data, int *labels,
             float epsilon, float Ce, float cost, float tolerance,
             int heuristic, int nPoints,  int dFeatures,
-            float paramA, float paramB, float paramC, float *trainResult){
-
-    int err;                            // error code returned from api calls
-
-    size_t globalFoph1;             // global domain size for our calculation
-    size_t globalFoph2;
-
-    size_t localFoph1;                  // local domain size for our calculation
-    size_t localFoph2;
-
-    size_t vectorSize = sizeof(float) * dFeatures;
+            float paramA, float paramB, float paramC,
+            size_t localInitSize, size_t globalInitSize,
+            int num_foph1_workgroups, size_t localFoph1Size, size_t globalFoph1Size,
+            size_t localFoph2Size, size_t globalFoph2Size,
+            cl_mem d_input_data, cl_mem d_labels, cl_mem d_trainingAlpha, cl_mem d_kernelDiag, cl_mem d_F,
+            cl_mem d_lowFs, cl_mem d_highFs, cl_mem d_lowIndices, cl_mem d_highIndices, cl_mem d_results,
+            cl_command_queue queue, cl_kernel init, cl_kernel step1, cl_kernel foph1, cl_kernel foph2, float *p_rho, int *p_nSV, int *p_iterations,
+            float **p_signedAlpha, float **p_supportVectors){
 
 
-    cl_device_id device_id;             // compute device id
-    cl_context context;                 // compute context
-    cl_command_queue commands;          // compute command queue
-    cl_program program;                 // compute program
-    cl_kernel foph1;                   // compute kernel
-    cl_kernel foph2;
-
-    // Connect to a compute device
-    //
-    int gpu = 0;
-    err = clGetDeviceIDs(NULL, gpu ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
+    int err;
+    err = 0;
+    err |= clSetKernelArg(init, 0, sizeof(cl_mem), &d_input_data);
+    err |= clSetKernelArg(init, 1, sizeof(cl_mem), &d_labels);
+    err |= clSetKernelArg(init, 2, sizeof(cl_mem), &d_F);
+    err |= clSetKernelArg(init, 3, sizeof(cl_mem), &d_kernelDiag);
+    err |= clSetKernelArg(init, 4, sizeof(int), &nPoints);
+    err |= clSetKernelArg(init, 5, sizeof(int), &dFeatures);
+    err |= clSetKernelArg(init, 6, sizeof(float), &paramA);
+    err |= clSetKernelArg(init, 7, sizeof(float), &paramB);
+    err |= clSetKernelArg(init, 8, sizeof(float), &paramC);
     if (err != CL_SUCCESS){
-        printf("Error: Failed to create a device group!\n");
-        return err;
+                printf("Error: Failed to set kernel arguments! %d\n", err);
+                return err;
     }
-
-    // Create a compute context
-    //
-    context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
-    if (!context){
-        printf("Error: Failed to create a compute context!\n");
-        return err;
-    }
-
-    // Create a command commands
-    //
-    commands = clCreateCommandQueue(context, device_id, 0, &err);
-    if (!commands){
-        printf("Error: Failed to create a command commands!\n");
-        return err;
-    }
-
-    // Read the kernel into a string
-    //
-    FILE *kernelFile = fopen($kernel_path, "rb");
-    if (kernelFile == NULL) {
-        printf("Error: Coudn't open kernel file.\n");
-        return err;
-    }
-
-    fseek(kernelFile, 0 , SEEK_END);
-    long kernelFileSize = ftell(kernelFile);
-    rewind(kernelFile);
-
-    // Allocate memory to hold kernel
-    //
-    char *KernelSource = malloc(kernelFileSize*sizeof(char));
-    memset(KernelSource, 0, kernelFileSize);
-    if (KernelSource == NULL) {
-        printf("Error: failed to allocate memory to hold kernel text.\n");
-        return err;
-    }
-
-    // Read the kernel into memory
-    //
-    int result = fread(KernelSource, sizeof(char), kernelFileSize, kernelFile);
-    if (result != kernelFileSize) {
-        printf("Error: read fewer bytes of kernel text than expected.\n");
-        return err;
-    }
-    fclose(kernelFile);
-
-    printf("%s\n", KernelSource);
-    // Create the compute program from the source buffer
-    //
-    program = clCreateProgramWithSource(context, 1, (const char **) & KernelSource, NULL, &err);
-    if (!program){
-        printf("Error: Failed to create compute program!\n");
-        return err;
-    }
-
-    // Build the program executable
-    //
-    err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
-    if (err != CL_SUCCESS) {
-        size_t len;
-        char buffer[32768];
-
-        printf("Error: Failed to build program executable!\n");
-        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-        printf("%s\n", buffer);
-        return err;
-    }
-
-    // Create the compute kernel in the program we wish to run
-    //
-    foph1 = clCreateKernel(program, "firstOrderPhaseOne", &err);
-    if (!foph1 || err != CL_SUCCESS){
-        printf("Error: Failed to create compute kernel!\n");
-        return err;
-    }
-    // Create the compute kernel in the program we wish to run
-    //
-    foph2 = clCreateKernel(program, "firstOrderPhaseTwo", &err);
-    if (!foph2 || err != CL_SUCCESS){
-        printf("Error: Failed to create compute kernel!\n");
-        return err;
-    }
-    // Set the local work group sizes for executing the kernel on the device
-    //
-    err = clGetKernelWorkGroupInfo(foph1, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(localFoph1), &localFoph1, NULL);
-    err |= clGetKernelWorkGroupInfo(foph2, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(localFoph2), &localFoph2, NULL);
+    err = clEnqueueNDRangeKernel(queue, init, 1, NULL, &globalInitSize, &localInitSize, 0, NULL, NULL);
     if (err != CL_SUCCESS){
-        printf("Error: Failed to retrieve kernel work group info! %d\n", err);
-        return err;
-    }
-    // Set the global work group sizes
-    // Set to the first multiple of local size greater than nPoints
-    int num_foph1_workgroups = (nPoints % localFoph1 != 0)?(nPoints / localFoph1 + 1):(nPoints/localFoph1);
-    globalFoph1 = num_foph1_workgroups * localFoph1;
-    globalFoph2 = localFoph2;
+        printf("Error: Failed to execute kernel init!\n");
+        printf("Global Size:%zu, Local Size:%zu\n", globalInitSize, localInitSize);
 
-    // convenient buffer receiving data from device
-    float results[8];
-
-    // Make Device Data
-    //
-
-    cl_mem d_results = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
-                                    sizeof results, NULL, &err);
-
-    cl_mem d_input_data = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    vectorSize * nPoints, input_data, &err);
-
-    cl_mem d_labels = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, labels, &err);
-
-    cl_mem d_trainingAlpha = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, training_alpha, &err);
-
-    float *F = (float *)malloc(nPoints * sizeof(float));
-    float *kernelDiag = (float *)malloc(nPoints * sizeof(float));
-
-    // intialize values
-    for(int i = 0; i < nPoints; i++){
-        float *vecA = input_data + i * dFeatures;
-        kernelDiag[i] = ${kernelFunc}Self(vecA, dFeatures, paramA, paramB, paramC);
-        F[i] = - labels[i];
-    }
-
-    cl_mem d_kernelDiag = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, kernelDiag, &err);
-
-    cl_mem d_F = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, F, &err);
-
-    cl_mem d_LowFs = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-
-    cl_mem d_HighFs = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-
-    cl_mem d_LowIndices = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-
-    cl_mem d_HighIndices = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
         return err;
     }
 
-
-    // start of actual program
-    // initialize
-
-    // find iHigh and iLow
-    int iLow = -1;
-    int iHigh = -1;
-    for(int i = 0; i < nPoints; i++){
-        int label = labels[i];
-        if(iLow < 0 && label == -1){
-            iLow = i;
-        }else if(iHigh < 0 && label == 1){
-            iHigh = i;
-        }
-    }
-
-    float bLow = 1.0f;
-    float bHigh = -1.0f;
-    float gap = bHigh - bLow;
-
-    // do the first half iteration
-    float alpha2old = training_alpha[iLow];
-    float alpha1old = training_alpha[iHigh];
-    float alphadiff = alpha2old - alpha1old;
+    float bLow;
+    float bHigh;
+    int iLow;
+    int iHigh;
     float alpha1diff;
     float alpha2diff;
-    float alpha1new;
-    float alpha2new;
-    float alphaSum;
+    size_t globalStep1Size = 1;
+    size_t localStep1Size = 1;
+    err = 0;
+    err |= clSetKernelArg(step1, 0, sizeof(cl_mem), &d_input_data);
+    err |= clSetKernelArg(step1, 1, sizeof(cl_mem), &d_labels);
+    err |= clSetKernelArg(step1, 2, sizeof(cl_mem), &d_trainingAlpha);
+    err |= clSetKernelArg(step1, 3, sizeof(cl_mem), &d_kernelDiag);
+    err |= clSetKernelArg(step1, 4, sizeof(float), &cost);
+    err |= clSetKernelArg(step1, 5, sizeof(int), &nPoints);
+    err |= clSetKernelArg(step1, 6, sizeof(int), &dFeatures);
+    err |= clSetKernelArg(step1, 7, sizeof(float), &paramA);
+    err |= clSetKernelArg(step1, 8, sizeof(float), &paramB);
+    err |= clSetKernelArg(step1, 9, sizeof(float), &paramC);
+    err |= clSetKernelArg(step1, 10, sizeof(cl_mem), &d_results);
 
-    int lowLabel = labels[iLow];
-    int sign = labels[iHigh]*lowLabel;
-    float L;
-    float H;
-
-    // find lower and upper bounds L and H
-    if (sign < 0){
-        if(alphadiff < 0.0f){
-            L = 0.0f;
-            H = cost + alphadiff;
-        }else{
-            L = alphadiff;
-            H = cost;
-        }
-    }else{
-        alphaSum = alpha2old + alpha1old;
-        if (alphaSum < cost){
-            L = 0.0f;
-            H = alphaSum;
-        }else{
-            L = cost - alphaSum;
-            H = cost;
-        }
+    if (err != CL_SUCCESS){
+        printf("Error: Failed to set kernel arguments! %d\n", err);
+        return err;
+    }
+    err = clEnqueueNDRangeKernel(queue, step1, 1, NULL, &globalStep1Size, &localStep1Size, 0, NULL, NULL);
+    if (err != CL_SUCCESS){
+        printf("Error: Failed to execute kernel step1!\n");
+        printf("Global Size:%zu, Local Size:%zu", globalStep1Size, localStep1Size);
+        return err;
+    }
+    err = clFinish(queue);
+    if (err != CL_SUCCESS){
+        printf("Error: waiting for queue to finish failed\n");
+        return err;
     }
 
-    // compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
-    float eta = kernelDiag[iLow] + kernelDiag[iHigh];
-    float *vecA = input_data + iHigh * dFeatures;
-    float *vecB = input_data + iLow * dFeatures;
-    float phiAB = ${kernelFunc}(vecA, vecB, dFeatures, paramA, paramB, paramC);
-    eta -= 2.0f * phiAB;
-    if (eta > 0.0f){
-        //compute
-        alpha2new = alpha2old + labels[iLow]*gap/eta;
-        //clip
-        if (alpha2new < L){
-            alpha2new = L;
-        }else if(alpha2new > H){
-            alpha2new = H;
-        }else{ // alpha2new can now only assume endpoints or alpha2old (this is rare)
-            float slope = lowLabel * gap;
-            float delta = slope * (H - L);
-            if (delta > 0){
-                if (slope > 0){
-                    alpha2new = H;
-                }else{
-                    alpha2new = L;
-                }
-            }else{
-                alpha2new = alpha2old;
-            }
-        }
-    }
+    float results[8];
+    //printf("size of results: %d", sizeof(results));
+    getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
 
-    alpha2diff = alpha2new - alpha2old;
-    alpha1diff = -sign*alpha2diff;
-    alpha1new = alpha1old + alpha1diff;
-    training_alpha[iHigh] = alpha1new;
-    training_alpha[iLow] = alpha2new;
     int iteration;
-    for (iteration = 1; true; iteration++){
+    for (iteration = 0; true; iteration++){
+
         if(bLow <= bHigh + 2 * tolerance){
             break;
         }
@@ -371,15 +107,16 @@ int train(float *input_data, float *labels, float *training_alpha,
         if (heuristic == 0){
             // Set the arguments to foph1
             //
+
             err = 0;
             err  = clSetKernelArg(foph1, 0, sizeof(cl_mem), &d_input_data);
             err  |= clSetKernelArg(foph1, 1, sizeof(cl_mem), &d_labels);
             err  |= clSetKernelArg(foph1, 2, sizeof(cl_mem), &d_trainingAlpha);
             err  |= clSetKernelArg(foph1, 3, sizeof(cl_mem), &d_F);
-            err  |= clSetKernelArg(foph1, 4, sizeof(cl_mem), &d_LowFs);
-            err  |= clSetKernelArg(foph1, 5, sizeof(cl_mem), &d_HighFs);
-            err  |= clSetKernelArg(foph1, 6, sizeof(cl_mem), &d_LowIndices);
-            err  |= clSetKernelArg(foph1, 7, sizeof(cl_mem), &d_HighIndices);
+            err  |= clSetKernelArg(foph1, 4, sizeof(cl_mem), &d_lowFs);
+            err  |= clSetKernelArg(foph1, 5, sizeof(cl_mem), &d_highFs);
+            err  |= clSetKernelArg(foph1, 6, sizeof(cl_mem), &d_lowIndices);
+            err  |= clSetKernelArg(foph1, 7, sizeof(cl_mem), &d_highIndices);
             err  |= clSetKernelArg(foph1, 8, sizeof(int), &nPoints);
             err  |= clSetKernelArg(foph1, 9, sizeof(int), &dFeatures);
             err  |= clSetKernelArg(foph1, 10, sizeof(float), &epsilon);
@@ -391,16 +128,17 @@ int train(float *input_data, float *labels, float *training_alpha,
             err  |= clSetKernelArg(foph1, 16, sizeof(float), &paramA);
             err  |= clSetKernelArg(foph1, 17, sizeof(float), &paramB);
             err  |= clSetKernelArg(foph1, 18, sizeof(float), &paramC);
-            err  |= clSetKernelArg(foph1, 19, sizeof(int) * localFoph1, NULL);
-            err  |= clSetKernelArg(foph1, 20, sizeof(float) * localFoph1, NULL);
+            err  |= clSetKernelArg(foph1, 19, sizeof(int) * localFoph1Size, NULL);
+            err  |= clSetKernelArg(foph1, 20, sizeof(float) * localFoph1Size, NULL);
 
             if (err != CL_SUCCESS){
                 printf("Error: Failed to set kernel arguments! %d\n", err);
                 return err;
             }
-            err = clEnqueueNDRangeKernel(commands, foph1, 1, NULL, &globalFoph1, &localFoph1, 0, NULL, NULL);
+
+            err = clEnqueueNDRangeKernel(queue, foph1, 1, NULL, &globalFoph1Size, &localFoph1Size, 0, NULL, NULL);
             if (err != CL_SUCCESS){
-                printf("Error: Failed to execute kernel!\n");
+                printf("Error: Failed to execute kernel Foph1!\n");
                 return err;
             }
 
@@ -411,99 +149,98 @@ int train(float *input_data, float *labels, float *training_alpha,
             err  |= clSetKernelArg(foph2, 1, sizeof(cl_mem), &d_labels);
             err  |= clSetKernelArg(foph2, 2, sizeof(cl_mem), &d_trainingAlpha);
             err  |= clSetKernelArg(foph2, 3, sizeof(cl_mem), &d_kernelDiag);
-            err  |= clSetKernelArg(foph2, 4, sizeof(cl_mem), &d_LowFs);
-            err  |= clSetKernelArg(foph2, 5, sizeof(cl_mem), &d_HighFs);
-            err  |= clSetKernelArg(foph2, 6, sizeof(cl_mem), &d_LowIndices);
-            err  |= clSetKernelArg(foph2, 7, sizeof(cl_mem), &d_HighIndices);
+            err  |= clSetKernelArg(foph2, 4, sizeof(cl_mem), &d_lowFs);
+            err  |= clSetKernelArg(foph2, 5, sizeof(cl_mem), &d_highFs);
+            err  |= clSetKernelArg(foph2, 6, sizeof(cl_mem), &d_lowIndices);
+            err  |= clSetKernelArg(foph2, 7, sizeof(cl_mem), &d_highIndices);
             err  |= clSetKernelArg(foph2, 8, sizeof(cl_mem), &d_results);
             err  |= clSetKernelArg(foph2, 9, sizeof(float), &cost);
             err  |= clSetKernelArg(foph2, 10, sizeof(int), &dFeatures);
-            err  |= clSetKernelArg(foph2, 11, sizeof(float), &paramA);
-            err  |= clSetKernelArg(foph2, 12, sizeof(float), &paramB);
-            err  |= clSetKernelArg(foph2, 13, sizeof(float), &paramC);
-            err  |= clSetKernelArg(foph2, 14, sizeof(int), &num_foph1_workgroups);
-            err  |= clSetKernelArg(foph2, 15, sizeof(int) * localFoph2, NULL);
-            err  |= clSetKernelArg(foph2, 16, sizeof(float) * localFoph2, NULL);
+            err  |= clSetKernelArg(foph2, 11, sizeof(int), &num_foph1_workgroups);
+            err  |= clSetKernelArg(foph2, 12, sizeof(float), &paramA);
+            err  |= clSetKernelArg(foph2, 13, sizeof(float), &paramB);
+            err  |= clSetKernelArg(foph2, 14, sizeof(float), &paramC);
+            err  |= clSetKernelArg(foph2, 15, sizeof(int) * localFoph2Size, NULL);
+            err  |= clSetKernelArg(foph2, 16, sizeof(float) * localFoph2Size, NULL);
 
             if (err != CL_SUCCESS){
                 printf("Error: Failed to set kernel arguments! %d\n", err);
                 return err;
             }
-            err = clEnqueueNDRangeKernel(commands, foph2, 1, NULL, &globalFoph2, &localFoph2, 0, NULL, NULL);
+
+            err = clEnqueueNDRangeKernel(queue, foph2, 1, NULL, &globalFoph2Size, &localFoph2Size, 0, NULL, NULL);
             if (err != CL_SUCCESS){
-                printf("Error: Failed to execute kernel!\n");
+                printf("Error: Failed to execute kernel Foph2!\n");
                 return err;
             }
 
-            // Wait for the command commands to get serviced before reading back results
+            // Wait for the command queue to get serviced before reading back results
             //
-            err = clFinish(commands);
+            err = clFinish(queue);
+
             if (err != CL_SUCCESS){
                 printf("Error: waiting for queue to finish failed\n");
                 return err;
             }
 
-            err = clEnqueueReadBuffer(commands, d_results, CL_TRUE, 0, sizeof(results), results, 0, NULL, NULL);
-            if (err != CL_SUCCESS){
-                printf("Error: Failed to read buffer\n");
-                return err;
-            }
-            bLow = results[0];
-            bHigh = results[1];
-            iLow = results[2];
-            iHigh = results[3];
-            alpha1diff = results[4];
-            alpha2diff = results[5];
+            getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
+
         }
     }
     printf("INFO: %d iterations\n", iteration);
     printf("INFO: bLow: %f, bHigh %f\n", bLow, bHigh);
 
-    err = clEnqueueReadBuffer(commands, d_trainingAlpha, CL_TRUE, 0, sizeof(float) * nPoints, training_alpha, 0, NULL, NULL);
+    // get training alpha
+    float *training_alpha = (float *)malloc(sizeof(float) * nPoints);
+
+    err = clEnqueueReadBuffer(queue, d_trainingAlpha, CL_TRUE, 0, sizeof(float) * nPoints, training_alpha, 0, NULL, NULL);
     if (err != CL_SUCCESS){
         printf("Error: Failed to read buffer\n");
         return err;
     }
-
-    // clean up
-    clReleaseMemObject(d_results);
-    clReleaseMemObject(d_input_data);
-    clReleaseMemObject(d_labels);
-    clReleaseMemObject(d_trainingAlpha);
-    clReleaseMemObject(d_kernelDiag);
-    clReleaseMemObject(d_F);
-    clReleaseMemObject(d_LowFs);
-    clReleaseMemObject(d_HighFs);
-    clReleaseMemObject(d_LowIndices);
-    clReleaseMemObject(d_HighIndices);
-    clReleaseProgram(program);
-    clReleaseKernel(foph1);
-    clReleaseKernel(foph2);
-    clReleaseCommandQueue(commands);
-    clReleaseContext(context);
-
+    printf("Saving results!\n");
     // save results
-    float rho = (bHigh + bLow)/2;
+    *p_rho = (bHigh + bLow)/2;
     int nSV = 0;
     for(int i = 0; i < nPoints; i++){
         if (training_alpha[i] > epsilon){
             nSV++;
         }
     }
-    trainResult[0] = rho;
-    trainResult[1] = (float)nSV;
-    trainResult[2] = (float)iteration;
-    int svOffset = 3;
-    int signedAlphaOffset = svOffset + nSV * dFeatures;
     int index = 0;
+    *p_nSV = nSV;
+    *p_supportVectors = (float *)malloc(sizeof(float) * nSV * dFeatures);
+    *p_signedAlpha = (float *)malloc(sizeof(float) * nSV);
     for(int i = 0; i < nPoints; i++){
         if(training_alpha[i] > epsilon){
-            memcpy(&input_data[index * dFeatures], &trainResult[svOffset + index * dFeatures], vectorSize);
-            memcpy(&training_alpha[index], &trainResult[signedAlphaOffset + index], sizeof(float));
+            (* p_signedAlpha)[index] = labels[i] * training_alpha[i];
+            for(int j = 0; j < dFeatures; j++){
+                (* p_supportVectors)[index*dFeatures + j] = input_data[i * dFeatures + j];
+            }
             index ++;
         }
     }
+    printf("Exiting!\n");
     // Shutdown and cleanup
     //
     return 0;
+}
+void getResults(cl_command_queue queue, cl_mem d_results, float results[8], float* bLow, float *bHigh,
+                int *iLow, int *iHigh, float *alpha1diff, float *alpha2diff){
+    int err;
+    err = clEnqueueReadBuffer(queue, d_results, CL_TRUE, 0, 8 * sizeof(float), results, 0, NULL, NULL);
+    if (err != CL_SUCCESS){
+        printf("Error: Failed to read buffer\n");
+    }
+    *bLow = results[0];
+    *bHigh = results[1];
+    *iLow = (int)results[2];
+    *iHigh = (int)results[3];
+    *alpha1diff = results[4];
+    *alpha2diff = results[5];
+//    printf("Host: iLow:%d iHigh:%d\n", (int)results[2], (int)results[3]);
+//    printf("Host: bLow:%.2f bHigh:%.2f\n", results[0], results[1]);
+//    printf("Host: alpha1diff:%.2f alpha2diff:%.2f\n", results[4], results[5]);
+
+
 }

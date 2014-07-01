@@ -13,8 +13,10 @@
 #else
 #include <CL/cl.h>
 #endif
-#include "device_info.h"
-
+//#include "device_info.h"
+cl_mem createBufferAndEnqueueWrite(cl_command_queue, cl_context,
+                                   cl_mem_flags, size_t,
+                                   const void *, cl_int *);
 // Kernel Functions
 float linearSelf(float *vecA, int dFeatures, float paramA, float paramB, float paramC){
     int i;
@@ -152,7 +154,7 @@ int train(float *input_data, int *labels, float *training_alpha,
         return EXIT_FAILURE;
     }
     
-    output_device_info(device_id);
+    //output_device_info(device_id);
     // Create a compute context
     //
     context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
@@ -250,83 +252,46 @@ int train(float *input_data, int *labels, float *training_alpha,
     // Make Device Data
     //
 
-    cl_mem d_results = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
+    cl_mem d_results = createBufferAndEnqueueWrite(commands, context, CL_MEM_WRITE_ONLY,
                                     sizeof results, NULL, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_input_data = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    vectorSize * nPoints, &input_data, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_labels = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, &labels, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_trainingAlpha = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, &training_alpha, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
+
+    cl_mem d_input_data = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_ONLY,
+                                    vectorSize * nPoints, input_data, &err);
+
+    cl_mem d_labels = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_ONLY,
+                                    sizeof(int) * nPoints, labels, &err);
+
+
+
     float *F = (float *)malloc(nPoints * sizeof(float));
     float *kernelDiag = (float *)malloc(nPoints * sizeof(float));
 
-
     // intialize values
     for(int i = 0; i < nPoints; i++){
-
-
         float *vecA = input_data + i * dFeatures;
         kernelDiag[i] = polynomialSelf(vecA, dFeatures, paramA, paramB, paramC);
-        F[i] = - labels[i];
+        F[i] = - (float)labels[i];
     }
 
 
-    cl_mem d_kernelDiag = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, &kernelDiag, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_F = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                                    sizeof(float) * nPoints, &F, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_LowFs = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_HighFs = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_LowIndices = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
-    cl_mem d_HighIndices = clCreateBuffer(context, CL_MEM_READ_WRITE,
+    cl_mem d_kernelDiag = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_ONLY,
+                                    sizeof(float) * nPoints, kernelDiag, &err);
+
+    cl_mem d_F = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
+                                    sizeof(float) * nPoints, F, &err);
+
+    cl_mem d_LowFs = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
                                     sizeof(float) * num_foph1_workgroups, NULL, &err);
 
-    if (err != CL_SUCCESS){
-        printf("Error: Failed to allocate device memory!\n");
-        return err;
-    }
+    cl_mem d_HighFs = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
+                                    sizeof(float) * num_foph1_workgroups, NULL, &err);
 
-        printf("hello\n");
+    cl_mem d_LowIndices = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
+                                    sizeof(int) * num_foph1_workgroups, NULL, &err);
+
+    cl_mem d_HighIndices = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
+                                    sizeof(int) * num_foph1_workgroups, NULL, &err);
+
     // start of actual program
     // initialize
 
@@ -393,7 +358,7 @@ int train(float *input_data, int *labels, float *training_alpha,
     if (eta > 0.0f){
         //compute
         alpha2new = alpha2old + labels[iLow]*gap/eta;
-        //clip
+        //clip        
         if (alpha2new < L){
             alpha2new = L;
         }else if(alpha2new > H){
@@ -418,14 +383,15 @@ int train(float *input_data, int *labels, float *training_alpha,
     alpha1new = alpha1old + alpha1diff;
     training_alpha[iHigh] = alpha1new;
     training_alpha[iLow] = alpha2new;
-
+    cl_mem d_trainingAlpha = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_WRITE,
+                                sizeof(float) * nPoints, training_alpha, &err);
     int iteration;
-    for (iteration = 1; iteration < 2; iteration++){
+    for (iteration = 0; iteration<2; iteration++){
 
         if(bLow <= bHigh + 2 * tolerance){
             break;
         }
-        if (1){//(iteration & 0x7ff) == 0) {
+        if ((iteration & 0x7ff) == 0) {
            printf("iteration: %d; gap: %f\n",iteration, bLow - bHigh);
         }
 
@@ -574,6 +540,23 @@ int train(float *input_data, int *labels, float *training_alpha,
     //
     return 0;
 }
+cl_mem createBufferAndEnqueueWrite(cl_command_queue queue, cl_context context,
+                                   cl_mem_flags flags, size_t size,
+                                   const void *hostptr, cl_int *error_code_ret){
+    cl_mem d_buffer = clCreateBuffer(context, flags, size, NULL, error_code_ret);
+    if(!d_buffer){
+        printf("Failed to create buffer!\n%d\n", *error_code_ret);
+        return d_buffer;
+    }
+    if(hostptr != NULL){
+        *error_code_ret = clEnqueueWriteBuffer(queue, d_buffer, CL_TRUE, 0, size, hostptr,0, NULL,NULL);
+    }
+    if (*error_code_ret != CL_SUCCESS){
+        printf("Failed to enqueue write to buffer!\n%d\n", * error_code_ret);
+        return d_buffer;
+    }
+    return d_buffer;
+}
 int main(){
     float input_data[50][2];
     int labels[50];
@@ -592,5 +575,5 @@ int main(){
         }
         alpha[i] = 0;
     }
-    train(input_data, labels, alpha, 0.001, 9.999, 10, 0.0001, 0, 50, 2, 0.5, 0, 3, trainResult);
+    train(input_data, labels, alpha, 0.01, 9.99, 10, 0.001, 0, 50, 2, 0.5, 0, 3, trainResult);
 }

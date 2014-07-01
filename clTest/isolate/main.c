@@ -15,11 +15,28 @@
 #endif
 
 
+cl_mem createBufferAndEnqueueWrite(cl_command_queue queue, cl_context context,
+                                   cl_mem_flags flags, size_t size,
+                                   const void *hostptr, cl_int *error_code_ret){
+    cl_mem d_buffer = clCreateBuffer(context, flags, size, NULL, error_code_ret);
+    if(!d_buffer){
+        printf("Failed to create buffer!\n%d\n", *error_code_ret);
+        return d_buffer;
+    }
+    if(hostptr != NULL){
+        *error_code_ret = clEnqueueWriteBuffer(queue, d_buffer, CL_TRUE, 0, size, hostptr,0, NULL,NULL);
+    }
+    if (*error_code_ret != CL_SUCCESS){
+        printf("Failed to enqueue write to buffer!\n%d\n", * error_code_ret);
+        return d_buffer;
+    }
+    return d_buffer;
+}
 
 int train(float *input_data, int nPoints, int dFeatures){
     printf("Host Buffer Contents:\n");
     for(int i = 0; i < nPoints * dFeatures; i++){
-        printf("input_data[%d]: %.2f\n", i,input_data[i]);
+        printf("input_data,%d,: %.2f\n", i,input_data[i]);
     }
     
     int err;                            // error code returned from api calls
@@ -147,8 +164,8 @@ int train(float *input_data, int nPoints, int dFeatures){
     int num_foph1_workgroups = (nPoints % localFoph1 != 0)?(nPoints / localFoph1 + 1):(nPoints/localFoph1);
     globalFoph1 = num_foph1_workgroups * localFoph1;
 
-    cl_mem d_input_data = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                    vectorSize * nPoints, &input_data, &err);
+    cl_mem d_input_data = createBufferAndEnqueueWrite(commands, context, CL_MEM_READ_ONLY,
+                                    vectorSize * nPoints, input_data, &err);
     if (err != CL_SUCCESS){
         printf("Error: Failed to allocate device memory!\n");
         return err;
@@ -190,19 +207,10 @@ int train(float *input_data, int nPoints, int dFeatures){
 }
 int main(){
     float input_data[50][2];
-    int labels[50];
-    float alpha[50];
-    float trainResult[204];
     for(int i = 0; i < 50; i++){
         for(int j=0; j <2; j++){
             input_data[i][j] = (float)(i + 1 - j);
         }
-        if(i%2 == 0){
-            labels[i] = -1;
-        }else{
-            labels[i] = 1;
-        }
-        alpha[i] = 0;
     }
     train(input_data, 50, 2);
     return 0;

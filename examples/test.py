@@ -38,7 +38,7 @@ def read_data(in_file_name):
     return return_points, return_labels
 
 def plot_svm2d(points, labels, trained_svm, title):
-    h = 0.02
+    h = .01 # grid step
     xMin, xMax = points[:,0].min()-1, points[:,0].max()+1
     yMin, yMax = points[:,1].min()-1, points[:,1].max()+1
     xx, yy = np.meshgrid(np.arange(xMin, xMax, h), np.arange(yMin, yMax, h))
@@ -66,15 +66,20 @@ def main():
         if y[i] == 0:
             y[i] = -1
     svm = SVMKernel()
-    svm.train(X,y,'polynomial',heuristicMethod = 0)
+    X = X.astype(np.float32)
+    y = y.astype(np.int32)
+    #print('Python implementation:')
+    #svm.train(X,y,'gaussian',heuristicMethod = 0, pythonOnly= True)
+    print('Ocl implementation:')
+    svm.train(X,y,'gaussian',heuristicMethod = 0)
     # print svm.rho
     # print svm.signed_alpha
     # print svm.support_vectors
     # print svm.iterations
     # print svm.nSV
-    # title = 'Iris Data Set, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
+    title = 'Iris Data Set, kernel = {}, gamma = {}, coef0 = {}, degree = {}'\
     #     .format(svm.kernel_type, svm.params['gamma'], svm.params['coef0'], svm.params['degree'])
-    # plot_svm2d(X,y,svm, title)
+    plot_svm2d(X,y,svm, title)
     #
     # # sample data from pyCASP
     # filename = 'svm_train_2.svm'

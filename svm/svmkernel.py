@@ -3,36 +3,110 @@ specializer svm
 
 follows algorithm from Catanzaro et al.
 """
-from ctree.jit import LazySpecializedFunction
+from ctree.jit import LazySpecializedFunction, ConcreteSpecializedFunction
+import pycl as cl
 import os
 import numpy as np
 from math import *
 from random import random
-import pyopencl as cl
 from ctree.ocl.nodes import *
 from ctree.templates.nodes import *
-from string import Template
 from ctree.c.nodes import *
-from ctree.types import *
-from ctree.c.types import *
+from ctypes import *
+from numpy.ctypeslib import as_array
+import logging
+from collections import OrderedDict
+
+#logging.basicConfig(level=20)
+class OclTrainFunction(ConcreteSpecializedFunction):
+    def __init__(self):
+        self.context = cl.clCreateContextFromType()
+        self.queue = cl.clCreateCommandQueue(self.context)
+        self.device = self.queue.device
+
+    def finalize(self, program, tree, entry_name):
+        self.program = program
+        self.init = program["initializeArrays"]
+        self.step1 = program["doFirstStep"]
+        self.foph1 = program["firstOrderPhaseOne"]
+        self.foph2 = program["firstOrderPhaseTwo"]
+        
+
+        entry_type = CFUNCTYPE(c_int, POINTER(c_float), POINTER(c_int), c_float, c_float, c_float, c_float, c_int, c_int, c_int,
+                                c_float, c_float, c_float, c_size_t,c_size_t, c_int, c_size_t, c_size_t, c_size_t, c_size_t,
+                                cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem, cl.cl_mem,
+                                cl.cl_command_queue, cl.cl_kernel, cl.cl_kernel, cl.cl_kernel, cl.cl_kernel, POINTER(c_float), POINTER(c_int),
+                                POINTER(c_int), POINTER(POINTER(c_float)), POINTER(POINTER(c_float)))
+
+        self._c_function = self._compile(entry_name, tree, entry_type)
+        return self
+
+    def __call__(self, *args):
+        nPoints, dFeatures = args[0].shape
+
+
+        localInitSize = self.init.work_group_size(self.device)
+        print localInitSize
+        localFoph1Size = self.foph1.work_group_size(self.device)
+        localFoph2Size = self.foph2.work_group_size(self.device)
+        num_work_groups_init = nPoints/localInitSize if (nPoints % localInitSize == 0) else nPoints/localInitSize + 1
+        num_work_groups_foph1 = nPoints/localFoph1Size if (nPoints % localFoph1Size == 0) else nPoints/localFoph1Size + 1
+        globalInitSize = num_work_groups_init * localInitSize
+        globalFoph1Size = num_work_groups_foph1 * localFoph1Size
+        globalFoph2Size = localFoph2Size
+
+        #buffers from input
+        d_input_data, evt = cl.buffer_from_ndarray(self.queue, args[0], blocking = False)
+        d_labels, evt = cl.buffer_from_ndarray(self.queue, args[1], blocking = False)
+        args = (args[0].ctypes.data_as(POINTER(c_float)), args[1].ctypes.data_as(POINTER(c_int))) + args[2:]
+
+        #temporary numpy arrays
+        iArray = np.zeros(nPoints, dtype=np.float32)
+        reduceInts = np.zeros(num_work_groups_foph1, dtype = np.int32)
+        reduceFloats = np.zeros(num_work_groups_foph1, dtype = np.float32)
+        results = np.zeros(8, dtype= np.float32)
+
+        #buffers from scratch
+        d_training_alpha, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
+        d_kernelDiag, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
+        d_F, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
+        d_lowFs, evt = cl.buffer_from_ndarray(self.queue, reduceFloats, blocking = False)
+        d_highFs, evt = cl.buffer_from_ndarray(self.queue, reduceFloats, blocking = False)
+        d_lowIndices, evt = cl.buffer_from_ndarray(self.queue, reduceInts, blocking = False)
+        d_highIndices, evt = cl.buffer_from_ndarray(self.queue, reduceInts, blocking = False)
+        d_results, evt = cl.buffer_from_ndarray(self.queue, results, blocking = False)
+        #return values
+        rho = c_float()
+        nSV = c_int()
+        iterations = c_int()
+        signedAlpha = pointer(c_float())
+        supportVectors = pointer(c_float())
+
+        #add cl buffers, miscellany, and return pointers
+        args += (localInitSize, globalInitSize, num_work_groups_foph1,
+                 localFoph1Size, globalFoph1Size, localFoph2Size , globalFoph2Size,
+                d_input_data, d_labels, d_training_alpha, d_kernelDiag, d_F,
+                d_lowFs, d_highFs, d_lowIndices, d_highIndices, d_results,
+                self.queue, self.init, self.step1, self.foph1, self.foph2,
+                byref(rho), byref(nSV), byref(iterations), byref(signedAlpha), byref(supportVectors))
+        err = self._c_function(*args)
+        return rho.value, nSV.value, iterations.value, as_array(supportVectors,shape=(nSV.value,dFeatures)), as_array(signedAlpha,shape=(nSV.value,))
+
 class OclTrain(LazySpecializedFunction):
     def __init__(self, kernelFuncName):
         self.kernelFunc = kernelFuncName
-        super(OclTrain, self).__init__(None,"train")
+        super(OclTrain, self).__init__(None)
     def args_to_subconfig(self, args):
         conf = ()
-        for arg in args[:3]:
+        for arg in args[:2]:
             conf += ((arg.dtype, arg.ndim, arg.shape),)
-        conf += ((args[-1].dtype, args[-1].ndim, args[-1].shape),)
         return conf
     def transform(self, tree, program_config):
-        param_types = []
-        for arg in program_config[0][:-1]:
-            param_types.append(NdPointer(arg[0], arg[1], arg[2]))
-        param_types.extend([Float(), Float(), Float(),Float(),Int(), Int(), Int(),Float(),Float(),Float()])
-        arg = program_config[0][-1]
-        param_types.append(NdPointer(arg[0], arg[1], arg[2]))
 
+        # deviceInfoPath = os.path.join(os.getcwd(), "..", "templates", "device_info.h")
+        # deviceInfo = CFile("device_info",[
+        #     FileTemplate(deviceInfoPath, {})
+        # ])
         kernelPath = os.path.join(os.getcwd(), "..", "templates","oclkernel.tmpl.c")
         kernelInserts = {
             "kernelFunc": SymbolRef(self.kernelFunc),
@@ -49,8 +123,9 @@ class OclTrain(LazySpecializedFunction):
         wrapper = CFile("train", [
             FileTemplate(wrapperPath, wrapperInserts)
         ])
-        train_typsig = FuncType(Int(), param_types).as_ctype()
-        return Project([kernel, wrapper]), train_typsig
+        fn = OclTrainFunction()
+        program = cl.clCreateProgramWithSource(fn.context, kernel.codegen()).build()
+        return fn.finalize(program, Project([kernel, wrapper]),"train")
 
 
 class SVMKernel(object):
@@ -94,7 +169,6 @@ class SVMKernel(object):
 
         self.input_data = None
         self.labels = None
-        self.training_alpha = None
 
         self.support_vectors = None
         self.signed_alpha = None
@@ -104,13 +178,13 @@ class SVMKernel(object):
 
     def train(self, input_data, labels, kernel_type,
               gamma = None, coef0 = None, degree = None,
-              heuristicMethod = None, tolerance = None, cost = None, epsilon = None):
+              heuristicMethod = None, tolerance = None, cost = None, epsilon = None, pythonOnly = False):
+        self.pythonOnly = pythonOnly
 
         self.nPoints = input_data.shape[0]
         self.dFeatures = input_data.shape[1]
         self.input_data = input_data
         self.labels = labels
-        self.training_alpha = np.zeros(self.nPoints, dtype=np.float32)
         self.result = np.zeros(8, dtype=np.float32)
         
         self.setParams(kernel_type,self.nPoints, self.dFeatures,gamma,coef0,degree)
@@ -126,12 +200,12 @@ class SVMKernel(object):
         else:
             self.trainFunc = self.specializedTrain
 
-        result = self.trainFunc(self.input_data,self.labels, self.training_alpha,
+        result = self.trainFunc(self.input_data,self.labels,
                      self.epsilon, self.Ce, self.cost, self.tolerance,
                      self.heuristic, self.nPoints, self.dFeatures, self.params)
         self.rho, self.nSV, self.iterations, self.support_vectors, self.signed_alpha = result
 
-    def pytrain(self, input_data, labels, training_alpha, epsilon, Ce, cost, tolerance,
+    def pytrain(self, input_data, labels, epsilon, Ce, cost, tolerance,
                 heuristic, nPoints, dFeatures, params):
         #initialize
         iLow =None
@@ -142,24 +216,25 @@ class SVMKernel(object):
                 iLow = i
             elif iHigh is None and label == 1:
                 iHigh = i
-
+        training_alpha = np.zeros(self.nPoints, dtype=np.float32)
         F = np.empty(nPoints, dtype= np.float32)
         progress = Controller(2.0, heuristic, 64, nPoints)
         bLow = 1.0
         bHigh = -1.0
         gap = bHigh - bLow
-        KernelDiag = np.zeros(self.nPoints, dtype=np.float32)
+        kernelDiag = np.zeros(self.nPoints, dtype=np.float32)
         for i in range(nPoints):
-            KernelDiag[i] = self.kernelFuncSelf(input_data[i], params)
+            kernelDiag[i] = self.kernelFuncSelf(input_data[i], params)
             F[i] = -labels[i]
 
         #region First step/half-iteration
         # Initializes 2 values in the currently-zero training_alpha array
 
         # copied from below
-        # save previous alphas
+        # save old alphas
         alpha2old = training_alpha[iLow]
         alpha1old = training_alpha[iHigh]
+
         alphadiff = alpha2old - alpha1old
         lowLabel = labels[iLow]
         sign = labels[iHigh]*lowLabel
@@ -182,9 +257,15 @@ class SVMKernel(object):
                 H = cost
 
         # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
-        eta = KernelDiag[iLow] + KernelDiag[iHigh]
+        eta = kernelDiag[iLow] + kernelDiag[iHigh]
         phiAB = self.kernelFunc(input_data[iHigh], input_data[iLow], params)
+        print "phiAB: %.2f" % phiAB
         eta -= 2.0 * phiAB
+        print "eta: %.2f" % eta
+        print "gap: %.2f" % gap
+        print "alpha1old: %.2f" % alpha1old
+        print "alpha2old: %.2f" % alpha2old
+
         if eta > 0:
             #compute
             alpha2new = alpha2old + labels[iLow]*gap/eta
@@ -205,10 +286,16 @@ class SVMKernel(object):
                 alpha2new = alpha2old
 
         alpha2diff = alpha2new - alpha2old
-        alpha1diff = -sign*alpha2diff
+        alpha1diff = -sign * alpha2diff
         alpha1new = alpha1old + alpha1diff
         training_alpha[iHigh] = alpha1new
         training_alpha[iLow] = alpha2new
+        print iLow
+        print iHigh
+        print bLow
+        print bHigh
+        print alpha1new
+        print alpha2new
         #endregion
 
         #To clear things up, training_alpha[self.iLow] -> alpha2 and training_alpha[self.iHigh] ->alpha1
@@ -271,7 +358,7 @@ class SVMKernel(object):
                         else:  # second order
                             beta = bHigh - F[i]
                             if beta < 0:
-                                eta = KernelDiag[iHigh] + KernelDiag[i]
+                                eta = kernelDiag[iHigh] + kernelDiag[i]
                                 phiAB = self.kernelFunc(input_data[iHigh], input_data[i], params)
                                 eta -= 2.0 * phiAB
                                 deltaF = (beta ** 2)/eta
@@ -308,7 +395,7 @@ class SVMKernel(object):
                     H = cost
 
             # compute and clip alpha2new but only if eta is positive, i.e. second derivative is negative
-            eta = KernelDiag[iLow] + KernelDiag[iHigh]
+            eta = kernelDiag[iLow] + kernelDiag[iHigh]
             phiAB = self.kernelFunc(input_data[iHigh], input_data[iLow], params)
             eta -= 2.0 * phiAB
             if eta > 0:
@@ -335,6 +422,10 @@ class SVMKernel(object):
             alpha1new = alpha1old + alpha1diff
             training_alpha[iHigh] = alpha1new
             training_alpha[iLow] = alpha2new
+            # print "iHigh: %d" % iHigh
+            # print "iLow: %d" % iLow
+            # print "alpha1new: %.2f" % alpha1new
+            # print "alpha2new: %.2f" % alpha2new
             #endregion
             iteration += 1
 
@@ -365,23 +456,14 @@ class SVMKernel(object):
         paramA = params["gamma"]
         paramB = params["coef0"]
         paramC = params["degree"]
-        bufferSize = 3 + self.nPoints *(self.dFeatures+ 1)
-        bufferArray = np.zeros(bufferSize, dtype= np.float32)
-        args = args[:-1] + (paramA, paramB, paramC, bufferArray)
-        error = specialized(*args)
-        print error
-        rho = bufferArray[0]
-        nSV = (int)(bufferArray[1])
-        iterations = (int)(bufferArray[2])
-        support_vectors = bufferArray[3:3 + nSV*self.dFeatures].reshape((nSV,self.dFeatures))
-        signed_alpha = bufferArray[3 + nSV*self.dFeatures: 3 +(nSV*self.dFeatures+1)]
-        return rho, nSV, iterations, support_vectors, signed_alpha
+        args = args[:-1] + (paramA, paramB, paramC)
+        return specialized(*args)
 
     def classify(self, points_in):
         numPoints = points_in.shape[0]
         print 'Classification started: {} points to classify.'.format(numPoints)
 
-        labels_out = np.empty(numPoints, dtype = np.int8)
+        labels_out = np.empty(numPoints, dtype = np.int32)
         sum = 0
         for i in range(numPoints):
             if i % 10000 == 0:
