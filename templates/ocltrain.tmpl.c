@@ -198,7 +198,6 @@ int train(float *input_data, int *labels,
         printf("Error: Failed to read buffer\n");
         return err;
     }
-    printf("Saving results!\n");
     // save results
     *p_rho = (bHigh + bLow)/2;
     int nSV = 0;
@@ -220,7 +219,6 @@ int train(float *input_data, int *labels,
             index ++;
         }
     }
-    printf("Exiting!\n");
     // Shutdown and cleanup
     //
     return 0;

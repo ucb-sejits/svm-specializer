@@ -10,6 +10,9 @@ Examples
 
 ###Iris Toy Dataset
 """
+from svm.svmtools import *
+from sklearn import datasets
+
 # iris data set from scikit-learn
 iris = datasets.load_iris()
 # get 1st 100 data points
@@ -26,9 +29,9 @@ y = y.astype(np.int32)
 
 print('Python implementation:')
 svm.train(X,y,'gaussian',heuristicMethod = 0, pythonOnly= True)
-plot_svm2d(X,y,svm, 'Iris Data Set')
+plot_svm2d(X,y,svm, 'Iris Data Set Python')
 
 print('Ocl implementation:')
 svm.train(X,y,'gaussian',heuristicMethod = 0)
-plot_svm2d(X,y,svm, 'Iris Data Set')
+plot_svm2d(X,y,svm, 'Iris Data Set OpenCL')
 """

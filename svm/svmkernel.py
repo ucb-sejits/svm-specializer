@@ -180,6 +180,7 @@ class SVMKernel(object):
               gamma = None, coef0 = None, degree = None,
               heuristicMethod = None, tolerance = None, cost = None, epsilon = None, pythonOnly = False):
         self.pythonOnly = pythonOnly
+        print self.pythonOnly
 
         self.nPoints = input_data.shape[0]
         self.dFeatures = input_data.shape[1]

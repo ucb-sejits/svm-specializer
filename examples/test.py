@@ -18,11 +18,11 @@ def main():
 
     print('Python implementation:')
     svm.train(X,y,'gaussian',heuristicMethod = 0, pythonOnly= True)
-    plot_svm2d(X,y,svm, 'Iris Data Set')
+    plot_svm2d(X,y,svm, 'Iris Data Set Python')
 
     print('Ocl implementation:')
     svm.train(X,y,'gaussian',heuristicMethod = 0)
-    plot_svm2d(X,y,svm, 'Iris Data Set')
+    plot_svm2d(X,y,svm, 'Iris Data Set OpenCL')
 
 
 if __name__ == "__main__":
