@@ -9,6 +9,7 @@ Examples
 <a name='iris'/>
 
 ###Iris Toy Dataset
+
 """
 from svm.svmtools import *
 from sklearn import datasets
