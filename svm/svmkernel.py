@@ -356,16 +356,17 @@ class SVMKernel(object):
                         bLow = f
                         if firstOrder:
                             iLow = i
-                        else:  # second order
-                            beta = bHigh - F[i]
-                            if beta < 0:
-                                eta = kernelDiag[iHigh] + kernelDiag[i]
-                                phiAB = self.kernelFunc(input_data[iHigh], input_data[i], params)
-                                eta -= 2.0 * phiAB
-                                deltaF = (beta ** 2)/eta
-                                if maxDeltaF is None or deltaF > maxDeltaF:
-                                    iLow = i
-                                    maxDeltaF = deltaF
+                    if not firstOrder:  # second order
+                        beta = bHigh - F[i]
+                        if beta <= epsilon:
+                            eta = kernelDiag[iHigh] + kernelDiag[i]
+                            phiAB = self.kernelFunc(input_data[iHigh], input_data[i], params)
+                            eta -= 2.0 * phiAB
+                            if eta <= 0: eta = epsilon
+                            deltaF = (beta ** 2)/eta
+                            if maxDeltaF is None or deltaF > maxDeltaF:
+                                iLow = i
+                                maxDeltaF = deltaF
             #endregion
 
             #region Update alphas

@@ -16,9 +16,9 @@ def main():
     X = X.astype(np.float32)
     y = y.astype(np.int32)
 
-    print('Python implementation:')
-    svm.train(X,y,'gaussian',heuristicMethod = 0, pythonOnly= True)
-    plot_svm2d(X,y,svm, 'Iris Data Set Python')
+    # print('Python implementation:')
+    # svm.train(X,y,'gaussian',heuristicMethod = 0, pythonOnly= True)
+    # plot_svm2d(X,y,svm, 'Iris Data Set Python')
 
     print('Ocl implementation:')
     svm.train(X,y,'gaussian',heuristicMethod = 0)

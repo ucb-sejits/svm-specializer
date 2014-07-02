@@ -185,6 +185,8 @@ int train(float *input_data, int *labels,
 
             getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
 
+        }else{
+
         }
     }
     printf("INFO: %d iterations\n", iteration);
