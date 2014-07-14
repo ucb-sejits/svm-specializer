@@ -1,10 +1,7 @@
 #include <math.h>
 #include <float.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <math.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifdef __APPLE__
@@ -13,22 +10,104 @@
 #else
 #include <CL/cl.h>
 #endif
+#include <time.h>
+
 
 void getResults(cl_command_queue queue, cl_mem d_results, float *results, float* bLow, float *bHigh,
                 int *iLow, int *iHigh, float *alpha1diff, float *alpha2diff);
 
+//typedef struct CacheNode CacheNode;
+//struct CacheNode{
+//    CacheNode *prev;
+//    CacheNode *next;
+//    int cacheLineNum;
+//    int index; //i.e. an iHigh or iLow
+//};
+//CacheNode* createCacheNode(int cacheLineNum, int index){
+//    CacheNode* node = malloc(node)
+//}
+//typedef struct CacheList CacheList;
+//struct CacheList{
+//    int count;
+//    CacheNode *first;
+//    CacheNode *last;
+//};
+//CacheList* createList(){
+//    CacheList* list = malloc(sizeof(CacheList));
+//    list->count = 0;
+//    return list;
+//}
+//void moveToEnd(CacheList *list, CacheNode* node){
+//    remove(list, node);
+//    addToEnd(list, node);
+//}
+//void addToEnd(CacheList* list, CacheNode* node){
+//}
+//void remove(CacheList* list, CacheNode* node){
+//    if()
+//}
+//typedef struct Cache Cache;
+//struct Cache{
+//    CacheList *list;
+//    int nPoints;
+//    int numLines;
+//    CacheNode *cacheMap;
+//}
+//Cache* createCache(int nPoints, int numLines){
+//    Cache* cache = malloc(sizeof(Cache));
+//    cache->nPoints = nPoints;
+//    cache->numLines = numLines;
+//}
+//// Stores value in queue, starting from start index
+//// If full, evicts least recently used value by incrementing startPtr.
+//// and overwriting the
+//bool storeValue(Queue* queue, int val){
+//    bool eviction = false;
+//    int length = queue->length;
+//    int maxLength = queue->maxLength;
+//    if(length == maxLength){
+//        eviction = true;
+//        queue->startPtr += 1;
+//    }else{
+//        // set endPtr one past the last item, i.e. set to startPtr + length
+//        int *endPtr = queue->startPtr + length;
+//        // wrap around
+//        if (endPtr >= queue->store + maxLength){
+//            endPtr -= maxLength;
+//        }
+//        *endPtr = value;
+//        queue->length++;
+//    }
+//}
+//
+//typedef struct Cache{
+//    int nPoints;
+//    int *lineOf;
+//    Queue* queue;
+//} Cache;
+//Cache* createCache(int numLines, int nPoints){
+//    Cache* myCache = malloc(sizeof(Cache));
+//    myCache ->
+//}
 int train(float *input_data, int *labels,
             float epsilon, float Ce, float cost, float tolerance,
             int heuristic, int nPoints,  int dFeatures,
             float paramA, float paramB, float paramC,
             size_t localInitSize, size_t globalInitSize,
-            int num_foph1_workgroups, size_t localFoph1Size, size_t globalFoph1Size,
+            int numGroups_foph1, size_t localFoph1Size, size_t globalFoph1Size,
             size_t localFoph2Size, size_t globalFoph2Size,
-            cl_mem d_input_data, cl_mem d_labels, cl_mem d_trainingAlpha, cl_mem d_kernelDiag, cl_mem d_F,
-            cl_mem d_lowFs, cl_mem d_highFs, cl_mem d_lowIndices, cl_mem d_highIndices, cl_mem d_results,
-            cl_command_queue queue, cl_kernel init, cl_kernel step1, cl_kernel foph1, cl_kernel foph2, float *p_rho, int *p_nSV, int *p_iterations,
+            int numGroups_soph1, size_t localSoph1Size, size_t globalSoph1Size,
+            size_t localSoph2Size, size_t globalSoph2Size,
+            int numGroups_soph3, size_t localSoph3Size, size_t globalSoph3Size,
+            size_t localSoph4Size, size_t globalSoph4Size,
+            cl_mem d_input_data, cl_mem d_input_data_colmajor, cl_mem d_labels, cl_mem d_trainingAlpha, cl_mem d_kernelDiag, cl_mem d_F,
+            cl_mem d_highFsFO, cl_mem d_highIndicesFO, cl_mem d_lowFsFO, cl_mem d_lowIndicesFO,
+            cl_mem d_highFsSO1, cl_mem d_highIndicesSO1, cl_mem d_lowFsSO3, cl_mem d_lowIndicesSO3, cl_mem d_deltaFsSO3,
+            cl_mem d_results, cl_mem d_iHighCache,
+            cl_command_queue queue, cl_kernel init, cl_kernel step1, cl_kernel foph1, cl_kernel foph2,
+            cl_kernel soph1, cl_kernel soph2, cl_kernel soph3, cl_kernel soph4,
+            float *p_rho, int *p_nSV, int *p_iterations,
             float **p_signedAlpha, float **p_supportVectors){
-
 
     int err;
     err = 0;
@@ -53,6 +132,8 @@ int train(float *input_data, int *labels,
         return err;
     }
 
+
+
     float bLow;
     float bHigh;
     int iLow;
@@ -74,6 +155,7 @@ int train(float *input_data, int *labels,
     err |= clSetKernelArg(step1, 9, sizeof(float), &paramC);
     err |= clSetKernelArg(step1, 10, sizeof(cl_mem), &d_results);
 
+
     if (err != CL_SUCCESS){
         printf("Error: Failed to set kernel arguments! %d\n", err);
         return err;
@@ -81,7 +163,6 @@ int train(float *input_data, int *labels,
     err = clEnqueueNDRangeKernel(queue, step1, 1, NULL, &globalStep1Size, &localStep1Size, 0, NULL, NULL);
     if (err != CL_SUCCESS){
         printf("Error: Failed to execute kernel step1!\n");
-        printf("Global Size:%zu, Local Size:%zu", globalStep1Size, localStep1Size);
         return err;
     }
     err = clFinish(queue);
@@ -91,17 +172,19 @@ int train(float *input_data, int *labels,
     }
 
     float results[8];
-    //printf("size of results: %d", sizeof(results));
     getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
 
     int iteration;
+    bool iHighCompute = true;
+//    clock_t startTot = clock(), diffTot, diffSoph1, diffSoph2, diffSoph3, diffSoph4, diffGetResults;
+
     for (iteration = 0; true; iteration++){
 
         if(bLow <= bHigh + 2 * tolerance){
             break;
         }
         if ((iteration & 0x7ff) == 0) {
-           printf("iteration: %d; gap: %f\n",iteration, bLow - bHigh);
+            printf("iteration: %d; gap: %f\n",iteration, bLow - bHigh);
         }
 
         if (heuristic == 0){
@@ -113,10 +196,10 @@ int train(float *input_data, int *labels,
             err  |= clSetKernelArg(foph1, 1, sizeof(cl_mem), &d_labels);
             err  |= clSetKernelArg(foph1, 2, sizeof(cl_mem), &d_trainingAlpha);
             err  |= clSetKernelArg(foph1, 3, sizeof(cl_mem), &d_F);
-            err  |= clSetKernelArg(foph1, 4, sizeof(cl_mem), &d_lowFs);
-            err  |= clSetKernelArg(foph1, 5, sizeof(cl_mem), &d_highFs);
-            err  |= clSetKernelArg(foph1, 6, sizeof(cl_mem), &d_lowIndices);
-            err  |= clSetKernelArg(foph1, 7, sizeof(cl_mem), &d_highIndices);
+            err  |= clSetKernelArg(foph1, 4, sizeof(cl_mem), &d_lowFsFO);
+            err  |= clSetKernelArg(foph1, 5, sizeof(cl_mem), &d_highFsFO);
+            err  |= clSetKernelArg(foph1, 6, sizeof(cl_mem), &d_lowIndicesFO);
+            err  |= clSetKernelArg(foph1, 7, sizeof(cl_mem), &d_highIndicesFO);
             err  |= clSetKernelArg(foph1, 8, sizeof(int), &nPoints);
             err  |= clSetKernelArg(foph1, 9, sizeof(int), &dFeatures);
             err  |= clSetKernelArg(foph1, 10, sizeof(float), &epsilon);
@@ -149,14 +232,14 @@ int train(float *input_data, int *labels,
             err  |= clSetKernelArg(foph2, 1, sizeof(cl_mem), &d_labels);
             err  |= clSetKernelArg(foph2, 2, sizeof(cl_mem), &d_trainingAlpha);
             err  |= clSetKernelArg(foph2, 3, sizeof(cl_mem), &d_kernelDiag);
-            err  |= clSetKernelArg(foph2, 4, sizeof(cl_mem), &d_lowFs);
-            err  |= clSetKernelArg(foph2, 5, sizeof(cl_mem), &d_highFs);
-            err  |= clSetKernelArg(foph2, 6, sizeof(cl_mem), &d_lowIndices);
-            err  |= clSetKernelArg(foph2, 7, sizeof(cl_mem), &d_highIndices);
+            err  |= clSetKernelArg(foph2, 4, sizeof(cl_mem), &d_lowFsFO);
+            err  |= clSetKernelArg(foph2, 5, sizeof(cl_mem), &d_highFsFO);
+            err  |= clSetKernelArg(foph2, 6, sizeof(cl_mem), &d_lowIndicesFO);
+            err  |= clSetKernelArg(foph2, 7, sizeof(cl_mem), &d_highIndicesFO);
             err  |= clSetKernelArg(foph2, 8, sizeof(cl_mem), &d_results);
             err  |= clSetKernelArg(foph2, 9, sizeof(float), &cost);
             err  |= clSetKernelArg(foph2, 10, sizeof(int), &dFeatures);
-            err  |= clSetKernelArg(foph2, 11, sizeof(int), &num_foph1_workgroups);
+            err  |= clSetKernelArg(foph2, 11, sizeof(int), &numGroups_foph1);
             err  |= clSetKernelArg(foph2, 12, sizeof(float), &paramA);
             err  |= clSetKernelArg(foph2, 13, sizeof(float), &paramB);
             err  |= clSetKernelArg(foph2, 14, sizeof(float), &paramC);
@@ -186,16 +269,192 @@ int train(float *input_data, int *labels,
             getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
 
         }else{
+            // Set the arguments to soph1
+            //
 
+//            clock_t startSoph1 = clock();
+            if(iteration ==1){
+                iHighCompute = false;
+            }
+            alpha1diff = labels[iHigh] * alpha1diff;
+            alpha2diff = labels[iLow] * alpha2diff;
+            err = 0;
+            err  = clSetKernelArg(soph1, 0, sizeof(cl_mem), &d_input_data);
+            err  |= clSetKernelArg(soph1, 1, sizeof(cl_mem), &d_labels);
+            err  |= clSetKernelArg(soph1, 2, sizeof(cl_mem), &d_trainingAlpha);
+            err  |= clSetKernelArg(soph1, 3, sizeof(cl_mem), &d_F);
+            err  |= clSetKernelArg(soph1, 4, sizeof(cl_mem), &d_highFsSO1);
+            err  |= clSetKernelArg(soph1, 5, sizeof(cl_mem), &d_highIndicesSO1);
+            err  |= clSetKernelArg(soph1, 6, sizeof(int), &nPoints);
+            err  |= clSetKernelArg(soph1, 7, sizeof(int), &dFeatures);
+            err  |= clSetKernelArg(soph1, 8, sizeof(float), &epsilon);
+            err  |= clSetKernelArg(soph1, 9, sizeof(float), &Ce);
+            err  |= clSetKernelArg(soph1, 10, sizeof(int), &iHigh);
+            err  |= clSetKernelArg(soph1, 11, sizeof(int), &iLow);
+            err  |= clSetKernelArg(soph1, 12, sizeof(float), &alpha1diff);
+            err  |= clSetKernelArg(soph1, 13, sizeof(float), &alpha2diff);
+            err  |= clSetKernelArg(soph1, 14, sizeof(float), &paramA);
+            err  |= clSetKernelArg(soph1, 15, sizeof(float), &paramB);
+            err  |= clSetKernelArg(soph1, 16, sizeof(float), &paramC);
+            err  |= clSetKernelArg(soph1, 17, sizeof(int) * localSoph1Size, NULL);
+            err  |= clSetKernelArg(soph1, 18, sizeof(float) * localSoph1Size, NULL);
+            err  |= clSetKernelArg(soph1, 19, sizeof(cl_mem), &d_iHighCache);
+            err  |= clSetKernelArg(soph1, 20, sizeof(bool), &iHighCompute);
+
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to set kernel arguments! %d\n", err);
+                return err;
+            }
+
+            err = clEnqueueNDRangeKernel(queue, soph1, 1, NULL, &globalSoph1Size, &localSoph1Size, 0, NULL, NULL);
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to execute kernel Soph1!\n");
+                return err;
+            }
+//            clFinish(queue);
+//            diffSoph1 = clock() - startSoph1;
+
+//            clock_t startSoph2 = clock();
+
+            // Set the arguments to soph2
+            //
+            err = 0;
+            err  |= clSetKernelArg(soph2, 0, sizeof(cl_mem), &d_highFsSO1);
+            err  |= clSetKernelArg(soph2, 1, sizeof(cl_mem), &d_highIndicesSO1);
+            err  |= clSetKernelArg(soph2, 2, sizeof(cl_mem), &d_results);
+            err  |= clSetKernelArg(soph2, 3, sizeof(int), &numGroups_soph1);
+            err  |= clSetKernelArg(soph2, 4, sizeof(int) * localSoph2Size, NULL);
+            err  |= clSetKernelArg(soph2, 5, sizeof(float) * localSoph2Size, NULL);
+
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to set kernel arguments! %d\n", err);
+                return err;
+            }
+
+            err = clEnqueueNDRangeKernel(queue, soph2, 1, NULL, &globalSoph2Size, &localSoph2Size, 0, NULL, NULL);
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to execute kernel Soph2!\n");
+                return err;
+            }
+//            clFinish(queue);
+//            diffSoph2 = clock() - startSoph2;
+
+            // Set the arguments to soph3
+            //
+//            clock_t startSoph3 = clock();
+//            clFinish(queue);
+            getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
+
+            err = 0;
+            err  = clSetKernelArg(soph3, 0, sizeof(cl_mem), &d_input_data);
+            err  |= clSetKernelArg(soph3, 1, sizeof(cl_mem), &d_labels);
+            err  |= clSetKernelArg(soph3, 2, sizeof(cl_mem), &d_trainingAlpha);
+            err  |= clSetKernelArg(soph3, 3, sizeof(cl_mem), &d_F);
+            err  |= clSetKernelArg(soph3, 4, sizeof(cl_mem), &d_kernelDiag);
+            err  |= clSetKernelArg(soph3, 5, sizeof(cl_mem), &d_lowFsSO3);
+            err  |= clSetKernelArg(soph3, 6, sizeof(cl_mem), &d_lowIndicesSO3);
+            err  |= clSetKernelArg(soph3, 7, sizeof(cl_mem), &d_deltaFsSO3);
+            err  |= clSetKernelArg(soph3, 8, sizeof(cl_mem), &d_results);
+            err  |= clSetKernelArg(soph3, 9, sizeof(int), &iHigh);
+            err  |= clSetKernelArg(soph3, 10, sizeof(float), &bHigh);
+            err  |= clSetKernelArg(soph3, 11, sizeof(int), &nPoints);
+            err  |= clSetKernelArg(soph3, 12, sizeof(int), &dFeatures);
+            err  |= clSetKernelArg(soph3, 13, sizeof(float), &epsilon);
+            err  |= clSetKernelArg(soph3, 14, sizeof(float), &Ce);
+            err  |= clSetKernelArg(soph3, 15, sizeof(float), &paramA);
+            err  |= clSetKernelArg(soph3, 16, sizeof(float), &paramB);
+            err  |= clSetKernelArg(soph3, 17, sizeof(float), &paramC);
+            err  |= clSetKernelArg(soph3, 18, sizeof(int) * localSoph3Size, NULL);
+            err  |= clSetKernelArg(soph3, 19, sizeof(float) * localSoph3Size, NULL);
+            err  |= clSetKernelArg(soph3, 20, sizeof(cl_mem), &d_iHighCache);
+
+
+
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to set kernel arguments! %d\n", err);
+                return err;
+            }
+
+            err = clEnqueueNDRangeKernel(queue, soph3, 1, NULL, &globalSoph3Size, &localSoph3Size, 0, NULL, NULL);
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to execute kernel Soph3!\n");
+                return err;
+            }
+//            clFinish(queue);
+//            diffSoph3 = clock() - startSoph3;
+
+            // Set the arguments to soph4
+            //
+//            clock_t startSoph4 = clock();
+
+            err = 0;
+            err  = clSetKernelArg(soph4, 0, sizeof(cl_mem), &d_input_data);
+            err  |= clSetKernelArg(soph4, 1, sizeof(cl_mem), &d_labels);
+            err  |= clSetKernelArg(soph4, 2, sizeof(cl_mem), &d_trainingAlpha);
+            err  |= clSetKernelArg(soph4, 3, sizeof(cl_mem), &d_kernelDiag);
+            err  |= clSetKernelArg(soph4, 4, sizeof(cl_mem), &d_lowFsSO3);
+            err  |= clSetKernelArg(soph4, 5, sizeof(cl_mem), &d_lowIndicesSO3);
+            err  |= clSetKernelArg(soph4, 6, sizeof(cl_mem), &d_deltaFsSO3);
+            err  |= clSetKernelArg(soph4, 7, sizeof(cl_mem), &d_results);
+            err  |= clSetKernelArg(soph4, 8, sizeof(float), &cost);
+            err  |= clSetKernelArg(soph4, 9, sizeof(int), &dFeatures);
+            err  |= clSetKernelArg(soph4, 10, sizeof(int), &numGroups_soph3);
+            err  |= clSetKernelArg(soph4, 11, sizeof(float), &paramA);
+            err  |= clSetKernelArg(soph4, 12, sizeof(float), &paramB);
+            err  |= clSetKernelArg(soph4, 13, sizeof(float), &paramC);
+            err  |= clSetKernelArg(soph4, 14, sizeof(cl_mem), &d_F);
+            err  |= clSetKernelArg(soph4, 15, sizeof(int) * localSoph4Size, NULL);
+            err  |= clSetKernelArg(soph4, 16, sizeof(float) * localSoph4Size, NULL);
+
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to set kernel arguments! %d\n", err);
+                return err;
+            }
+
+            err = clEnqueueNDRangeKernel(queue, soph4, 1, NULL, &globalSoph4Size, &localSoph4Size, 0, NULL, NULL);
+            if (err != CL_SUCCESS){
+                printf("Error: Failed to execute kernel Soph4!\n");
+                return err;
+            }
+//            clFinish(queue);
+//            diffSoph4 = clock() - startSoph4;
+
+            // Wait for the command queue to get serviced before reading back results
+            //
+            err = clFinish(queue);
+
+            if (err != CL_SUCCESS){
+                printf("Error: waiting for queue to finish failed\n");
+                return err;
+            }
+//            clock_t startGetResults = clock();
+
+            getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
+//            clFinish(queue);
+//            diffGetResults = clock() - startGetResults;
+            //printf("iLow:%d, iHigh:%d\n", (int)results[2], (int)results[3]);
         }
+
     }
     printf("INFO: %d iterations\n", iteration);
     printf("INFO: bLow: %f, bHigh %f\n", bLow, bHigh);
-
+//    diffTot = clock() - startTot;
+//    float msecTot = diffTot * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Total time taken %.3f milliseconds\n", msecTot);
+//    float msecSoph1 = diffSoph1 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph1 time taken %.3f milliseconds\n", msecSoph1);
+//    float msecSoph2 = diffSoph2 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph2 time taken %.3f milliseconds\n", msecSoph2);
+//    float msecSoph3 = diffSoph3 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph3 time taken %.3f milliseconds\n", msecSoph3);
+//    float msecSoph4 = diffSoph4 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph4 time taken %.3f milliseconds\n", msecSoph4);
+//    float msecGetResults = diffGetResults * 1000.0 / CLOCKS_PER_SEC;
+//    printf("GetResult time taken %.3f milliseconds\n", msecGetResults);
     // get training alpha
-    float *training_alpha = (float *)malloc(sizeof(float) * nPoints);
+    float *trainingAlpha = (float *)malloc(sizeof(float) * nPoints);
 
-    err = clEnqueueReadBuffer(queue, d_trainingAlpha, CL_TRUE, 0, sizeof(float) * nPoints, training_alpha, 0, NULL, NULL);
+    err = clEnqueueReadBuffer(queue, d_trainingAlpha, CL_TRUE, 0, sizeof(float) * nPoints, trainingAlpha, 0, NULL, NULL);
     if (err != CL_SUCCESS){
         printf("Error: Failed to read buffer\n");
         return err;
@@ -204,7 +463,7 @@ int train(float *input_data, int *labels,
     *p_rho = (bHigh + bLow)/2;
     int nSV = 0;
     for(int i = 0; i < nPoints; i++){
-        if (training_alpha[i] > epsilon){
+        if (trainingAlpha[i] > epsilon){
             nSV++;
         }
     }
@@ -213,8 +472,8 @@ int train(float *input_data, int *labels,
     *p_supportVectors = (float *)malloc(sizeof(float) * nSV * dFeatures);
     *p_signedAlpha = (float *)malloc(sizeof(float) * nSV);
     for(int i = 0; i < nPoints; i++){
-        if(training_alpha[i] > epsilon){
-            (* p_signedAlpha)[index] = labels[i] * training_alpha[i];
+        if(trainingAlpha[i] > epsilon){
+            (* p_signedAlpha)[index] = labels[i] * trainingAlpha[i];
             for(int j = 0; j < dFeatures; j++){
                 (* p_supportVectors)[index*dFeatures + j] = input_data[i * dFeatures + j];
             }
@@ -238,9 +497,9 @@ void getResults(cl_command_queue queue, cl_mem d_results, float results[8], floa
     *iHigh = (int)results[3];
     *alpha1diff = results[4];
     *alpha2diff = results[5];
-//    printf("Host: iLow:%d iHigh:%d\n", (int)results[2], (int)results[3]);
-//    printf("Host: bLow:%.2f bHigh:%.2f\n", results[0], results[1]);
-//    printf("Host: alpha1diff:%.2f alpha2diff:%.2f\n", results[4], results[5]);
+ //   printf("iLow:%d, iHigh:%d\n", (int)results[2], (int)results[3]);
+//    printf("bLow:%.9f, bHigh:%.9f\n", results[0], results[1]);
+//    printf("alpha1diff:%.2f alpha2diff:%.2f\n", results[4], results[5]);
 
 
 }

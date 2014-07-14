@@ -14,6 +14,8 @@ setup(
 
     install_requires=[
         'ctree',
+        'matplotlib',
+        'sklearn',
     ]
 )
 

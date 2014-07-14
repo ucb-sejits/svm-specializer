@@ -34,10 +34,7 @@ cl_mem createBufferAndEnqueueWrite(cl_command_queue queue, cl_context context,
 }
 
 int train(float *input_data, int nPoints, int dFeatures){
-    printf("Host Buffer Contents:\n");
-    for(int i = 0; i < nPoints * dFeatures; i++){
-        printf("input_data,%d,: %.2f\n", i,input_data[i]);
-    }
+
     
     int err;                            // error code returned from api calls
 
