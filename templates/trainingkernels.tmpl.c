@@ -1,28 +1,61 @@
 // Kernel Functions
+#define ZERO4 (float4)(0.0f, 0.0f, 0.0f, 0.0f)
+float sum(float4 in){
+    return dot(in, (float4)(1.0f, 1.0f, 1.0f, 1.0f));
+}
 float linearSelf(__global float *vecA, int dFeatures, float paramA, float paramB, float paramC){
     int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        float value = vecA[i];
+    float4 accumulant = ZERO4;
+    float leftover = 0.0f;
+    for(i = 0; i < dFeatures - 4; i+=4){
+        float4 value = vload4(0,vecA + i);
         accumulant += value * value;
     }
-    return accumulant;
+    for(;i<dFeatures; i++){
+        float value = vecA[i];
+        leftover += value*value;
+    }
+    return sum(accumulant) + leftover;
 }
 float linear(__global float *vecA, __global float *vecB, int dFeatures, float paramA, float paramB, float paramC){
     int i;
-    float accumulant = 0.0f;
-    for(i = 0; i < dFeatures; i++){
-        accumulant += vecA[i] * vecB[i];
+    float4 accumulant = ZERO4;
+    float leftover = 0.0f;
+    for(i = 0; i < dFeatures - 4; i+=4){
+        float4 valueA = vload4(0,vecA + i);
+        float4 valueB = vload4(0,vecB + i);
+        accumulant += valueA * valueB;
     }
-    return accumulant;
+    for(;i<dFeatures; i++){
+        leftover += vecA[i]*vecB[i];
+    }
+    return sum(accumulant) + leftover;
+}
+void linearDual(__global float *vecA, __global float *vecB, __global float *commonVec, float *resultA, float *resultB,
+                int dFeatures, float paramA, float paramB, float paramC){
+    int i;
+    float4 accumulantA = ZERO4;
+    float4 accumulantB = ZERO4;
+    float A = 0.0f;
+    float B = 0.0f;
+    for(i = 0; i < dFeatures - 4; i+=4){
+        float4 cV = vload4(0,commonVec +i);
+        accumulantA += cV * vload4(0, vecA + i);
+        accumulantB += cV * vload4(0, vecB + i);
+    }
+    for(;i <dFeatures; i++){
+        float cV = commonVec[i];
+        A += cV * vecA[i];
+        B += cV * vecB[i];
+    }
+    *resultA = A + sum(accumulantA);
+    *resultB = B + sum(accumulantB);
 }
 
 float gaussianSelf(__global float *vecA, int dFeatures, float paramA, float paramB, float paramC){
     return 1.0f;
 }
-float sum(float4 in){
-    return dot(in, (float4)(1.0f, 1.0f, 1.0f, 1.0f));
-}
+
 float gaussian(__global float *vecA, __global float *vecB, int dFeatures, float paramA, float paramB, float paramC){
     int i;
     float4 accumulant = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
@@ -38,7 +71,7 @@ float gaussian(__global float *vecA, __global float *vecB, int dFeatures, float 
     leftover += sum(accumulant);
     return exp(paramA * leftover);
 }
-float gaussianDual(__global float *vecA, __global float *vecB, __global float *commonVec, float *resultA, float *resultB,
+void gaussianDual(__global float *vecA, __global float *vecB, __global float *commonVec, float *resultA, float *resultB,
                 int dFeatures, float paramA, float paramB, float paramC){
     int i;
     float4 accumulantA = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
@@ -462,7 +495,9 @@ __kernel void secondOrderPhaseOne(__global float *input_data, __global int *labe
                                 float alpha1diff, float alpha2diff,
                                 const float paramA, const float paramB,  const float paramC,
                                 __local int *tempLocalIndices,
-                                __local float *tempLocalFs, __global float *iHighCache, bool iHighCompute){
+                                __local float *tempLocalFs,
+                                __global float *cache, bool iHighCompute, bool iLowCompute,
+                                int iHighCacheIndex,int iLowCacheIndex){
     int gid = get_global_id(0);
     int lid = get_local_id(0);
     int grpid = get_group_id(0);
@@ -482,22 +517,32 @@ __kernel void secondOrderPhaseOne(__global float *input_data, __global int *labe
 
         float kernelHigh;
         float kernelLow;
-        __global float *vecB = input_data + iLow * dFeatures;
-        __global float *vecC = input_data + gid * dFeatures;
-        if (iHighCompute){
-            //if(gid == 29) printf("cache miss\n");
-            __global float *vecA = input_data + iHigh * dFeatures;
-            ${kernelFunc}Dual(vecA, vecB, vecC, &kernelHigh, &kernelLow, dFeatures, paramA, paramB, paramC);
-        }else {
-            //if(gid == 29) printf("cache hit\n");
-
-
-            kernelHigh = iHighCache[gid];
-            kernelLow = ${kernelFunc}(vecB, vecC,dFeatures,paramA,paramB,paramC );
+        __global float *vecHigh = input_data + iHigh * dFeatures;
+        __global float *vecLow = input_data + iLow * dFeatures;
+        __global float *vecI = input_data + gid * dFeatures;
+        if(!iLowCompute){
+            kernelLow = cache[iLowCacheIndex * nPoints + gid];
+        }
+        if(!iHighCompute){
+            kernelHigh = cache[iHighCacheIndex * nPoints + gid];
+        }
+        if (iHighCompute && iLowCompute){
+            ${kernelFunc}Dual(vecHigh, vecLow, vecI, &kernelHigh, &kernelLow, dFeatures, paramA, paramB, paramC);
+        }else if(iHighCompute){
+            kernelHigh = ${kernelFunc}(vecHigh, vecI,dFeatures,paramA,paramB,paramC );
+        }else if(iLowCompute){
+            kernelLow = ${kernelFunc}(vecLow, vecI,dFeatures,paramA,paramB,paramC );
         }
 
         f += alpha1diff * kernelHigh;
         f +=  alpha2diff * kernelLow;
+
+        if(iLowCompute){
+            cache[iLowCacheIndex * nPoints + gid] = kernelLow;
+        }
+        if(iHighCompute){
+            cache[iHighCacheIndex * nPoints + gid] = kernelHigh;
+        }
         F[gid] = f;
         //if(gid == 29) printf("%.4f iHighCache\n",iHighCache[gid]);
     }
@@ -557,7 +602,7 @@ __kernel void secondOrderPhaseThree(__global float *input_data, __global int *la
                                 const float epsilon, const float Ce,
                                 const float paramA, const float paramB,  const float paramC,
                                 __local int *tempLocalIndices,
-                                __local float *tempLocalValues,__global float *iHighCache){
+                                __local float *tempLocalValues,__global float *cache,bool iHighCompute, int iHighCacheIndex){
     int lid = get_local_id(0);
     int gid = get_global_id(0);
     int lsize = get_local_size(0);
@@ -585,10 +630,14 @@ __kernel void secondOrderPhaseThree(__global float *input_data, __global int *la
                 reduceDelta = true;
             }
         }
-        __global float *vecA = input_data + iHigh * dFeatures;
-        __global float *vecB = input_data + gid * dFeatures;
-        highKernel = ${kernelFunc}(vecA, vecB, dFeatures, paramA, paramB, paramC);
-        iHighCache[gid] = highKernel;
+        if(!iHighCompute){
+            highKernel = cache[iHighCacheIndex * nPoints+gid];
+        }else{
+            __global float *vecA = input_data + iHigh * dFeatures;
+            __global float *vecB = input_data + gid * dFeatures;
+            highKernel = ${kernelFunc}(vecA, vecB, dFeatures, paramA, paramB, paramC);
+            cache[iHighCacheIndex * nPoints + gid] = highKernel;
+        }
     }
 
     if(reduceF){

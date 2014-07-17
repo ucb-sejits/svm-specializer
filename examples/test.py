@@ -40,15 +40,15 @@ def main():
     # # plot_svm2d(X,y,svm, 'Iris Data Set Python')
     # print('OCL Implementation:')
     with Timer() as uncached:
-        svm.train(A[:][:],b[:],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
+        svm.train(A[:10000][:],b[:10000],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
     print "%.6f" %svm.rho
     with Timer() as cached:
-        svm.train(A[:][:],b[:],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
+        svm.train(A[:10000][:],b[:10000],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
     # print "%.6f" % svm.rho
     Xlist = A.tolist()
     ylist = b.tolist()
     with Timer() as LIBSVM:
-        svm_train(ylist[:], Xlist[:][:], '-c 10 -e 0.001')
+        svm_train(ylist[:10000], Xlist[:][:10000], '-c 10 -t 2 -e 0.001')
 
     # print "Python time: %.6f s" % python.interval
     print "Uncached OpenCL time (with compile): %.6f s" % uncached.interval

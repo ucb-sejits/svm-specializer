@@ -48,7 +48,7 @@ class OclTrainFunction(ConcreteSpecializedFunction):
 
         
 
-        entry_type = CFUNCTYPE(c_int, POINTER(c_float), POINTER(c_int), c_float, c_float, c_float, c_float, c_int, c_int, c_int,
+        entry_type = CFUNCTYPE(c_int, c_int, POINTER(c_float), POINTER(c_int), c_float, c_float, c_float, c_float, c_int, c_int, c_int,
 
                                 c_float, c_float, c_float, c_size_t, c_size_t,
                                 c_int, c_size_t, c_size_t, c_size_t, c_size_t,
@@ -69,7 +69,9 @@ class OclTrainFunction(ConcreteSpecializedFunction):
         return self
 
     def __call__(self, *args):
-        args = args[1:]
+        cacheSize = args[1]
+        cacheSizeInFloats = (int)(cacheSize/sizeof(c_float))
+        args = args[2:]
         nPoints, dFeatures = args[0].shape
 
 
@@ -124,12 +126,13 @@ class OclTrainFunction(ConcreteSpecializedFunction):
         reduceFloatsSO3 = np.zeros(numGroups_soph3, dtype = np.float32)
 
         results = np.zeros(8, dtype= np.float32)
+        cache = np.zeros(cacheSizeInFloats, dtype=np.float32)
 
         # new buffers from scratch
         d_trainingAlpha, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
         d_kernelDiag, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
         d_F, evt = cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
-        d_iHighCache, evt =  cl.buffer_from_ndarray(self.queue, iArray, blocking = False)
+        d_cache, evt =  cl.buffer_from_ndarray(self.queue, cache, blocking = False)
         
         d_highFsFO, evt = cl.buffer_from_ndarray(self.queue, reduceFloatsFO, blocking = False)
         d_highIndicesFO, evt = cl.buffer_from_ndarray(self.queue, reduceIntsFO, blocking = False)
@@ -153,6 +156,7 @@ class OclTrainFunction(ConcreteSpecializedFunction):
         signedAlpha = pointer(c_float())
         supportVectors = pointer(c_float())
 
+        args = (cacheSizeInFloats,)+args
         #add args
         args += (
                 # sizes
@@ -167,7 +171,7 @@ class OclTrainFunction(ConcreteSpecializedFunction):
                 d_input_data, d_input_data_colmajor, d_labels, d_trainingAlpha, d_kernelDiag, d_F,
                 d_highFsFO, d_highIndicesFO, d_lowFsFO, d_lowIndicesFO,
                 d_highFsSO1, d_highIndicesSO1, d_lowFsSO3, d_lowIndicesSO3, d_deltaFsSO3,
-                d_results, d_iHighCache,
+                d_results, d_cache,
                 # Ocl queue and kernels
                 self.queue, self.init, self.step1, self.foph1, self.foph2,
                 self.soph1, self.soph2, self.soph3, self.soph4,
@@ -191,10 +195,7 @@ class OclTrain(LazySpecializedFunction):
         # return conf
     def transform(self, tree, program_config):
 
-        # deviceInfoPath = os.path.join(os.getcwd(), "..", "templates", "device_info.h")
-        # deviceInfo = CFile("device_info",[
-        #     FileTemplate(deviceInfoPath, {})
-        # ])
+
         kernelFunc = program_config[0]
         kernelPath = os.path.join(os.getcwd(), "..", "templates","trainingkernels.tmpl.c")
         kernelInserts = {
@@ -267,7 +268,7 @@ class SVM(object):
         self.OclTrain = OclTrain(None)
 
 
-    def train(self, input_data, labels, kernel_type,
+    def train(self, input_data, labels, kernel_type, cacheSizeMB = 100,
               gamma = None, coef0 = None, degree = None,
               heuristicMethod = None, tolerance = None, cost = None, epsilon = None, pythonOnly = False):
         self.pythonOnly = pythonOnly
@@ -277,6 +278,7 @@ class SVM(object):
         self.input_data = input_data
         self.labels = labels
         self.result = np.zeros(8, dtype=np.float32)
+        self.cacheSize = cacheSizeMB * 1000000
         
         self.setParams(kernel_type,self.nPoints, self.dFeatures,gamma,coef0,degree)
         self.heuristic = heuristicMethod if heuristicMethod is not None else 2 #random
@@ -525,7 +527,7 @@ class SVM(object):
         paramA = params["gamma"]
         paramB = params["coef0"]
         paramC = params["degree"]
-        args = (self.kernel_type,) + args[:-1] + (paramA, paramB, paramC)
+        args = (self.kernel_type,self.cacheSize,) + args[:-1] + (paramA, paramB, paramC)
         return self.OclTrain(*args)
 
     def classify(self, points_in):

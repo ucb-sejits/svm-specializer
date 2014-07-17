@@ -16,80 +16,144 @@
 void getResults(cl_command_queue queue, cl_mem d_results, float *results, float* bLow, float *bHigh,
                 int *iLow, int *iHigh, float *alpha1diff, float *alpha2diff);
 
-//typedef struct CacheNode CacheNode;
-//struct CacheNode{
-//    CacheNode *prev;
-//    CacheNode *next;
-//    int cacheLineNum;
-//    int index; //i.e. an iHigh or iLow
-//};
-//CacheNode* createCacheNode(int cacheLineNum, int index){
-//    CacheNode* node = malloc(node)
-//}
-//typedef struct CacheList CacheList;
-//struct CacheList{
-//    int count;
-//    CacheNode *first;
-//    CacheNode *last;
-//};
-//CacheList* createList(){
-//    CacheList* list = malloc(sizeof(CacheList));
-//    list->count = 0;
-//    return list;
-//}
-//void moveToEnd(CacheList *list, CacheNode* node){
-//    remove(list, node);
-//    addToEnd(list, node);
-//}
-//void addToEnd(CacheList* list, CacheNode* node){
-//}
-//void remove(CacheList* list, CacheNode* node){
-//    if()
-//}
-//typedef struct Cache Cache;
-//struct Cache{
-//    CacheList *list;
-//    int nPoints;
-//    int numLines;
-//    CacheNode *cacheMap;
-//}
-//Cache* createCache(int nPoints, int numLines){
-//    Cache* cache = malloc(sizeof(Cache));
-//    cache->nPoints = nPoints;
-//    cache->numLines = numLines;
-//}
-//// Stores value in queue, starting from start index
-//// If full, evicts least recently used value by incrementing startPtr.
-//// and overwriting the
-//bool storeValue(Queue* queue, int val){
-//    bool eviction = false;
-//    int length = queue->length;
-//    int maxLength = queue->maxLength;
-//    if(length == maxLength){
-//        eviction = true;
-//        queue->startPtr += 1;
-//    }else{
-//        // set endPtr one past the last item, i.e. set to startPtr + length
-//        int *endPtr = queue->startPtr + length;
-//        // wrap around
-//        if (endPtr >= queue->store + maxLength){
-//            endPtr -= maxLength;
-//        }
-//        *endPtr = value;
-//        queue->length++;
-//    }
-//}
-//
-//typedef struct Cache{
-//    int nPoints;
-//    int *lineOf;
-//    Queue* queue;
-//} Cache;
-//Cache* createCache(int numLines, int nPoints){
-//    Cache* myCache = malloc(sizeof(Cache));
-//    myCache ->
-//}
-int train(float *input_data, int *labels,
+typedef struct CacheNode CacheNode;
+struct CacheNode{
+    CacheNode *prev;
+    CacheNode *next;
+    int cacheLineNum;
+    int index;
+};
+CacheNode* createCacheNode(int cacheLineNum, int index){
+    CacheNode* node = calloc(1,sizeof(CacheNode));
+    node->cacheLineNum = cacheLineNum;
+    node->index = index;
+    return node;
+}
+typedef struct CacheList CacheList;
+struct CacheList{
+    CacheNode *first;
+    CacheNode *last;
+};
+CacheList* createList(){
+    CacheList* list = calloc(1,sizeof(CacheList));
+    return list;
+}
+void addToEnd(CacheList* list, CacheNode* node){
+    if(list->last!=NULL){
+        node->prev = list->last;
+        list->last->next = node;
+        list->last = node;
+    }
+    else{
+        list->first = node;
+        list->last = node;
+    }
+}
+void removeNode(CacheList* list, CacheNode* node){
+// only element in list
+    if(node->next==NULL && node->prev==NULL){
+        list->first = NULL;
+        list->last = NULL;
+        node->prev=NULL;
+        node->next=NULL;
+        return;
+    }
+    //end of list
+    if(node->next==NULL){
+        list->last = node->prev;
+        node->prev=NULL;
+        return;
+    }
+    //beginning of list
+    if(node->prev==NULL){
+        list->first = node->next;
+        node->next=NULL;
+        return;
+    }
+    //middle of list
+    node->prev->next=node->next;
+    node->next->prev=node->prev;
+    node->next = NULL;
+    node->prev = NULL;
+}
+void moveToEnd(CacheList *list, CacheNode* node){
+    removeNode(list, node);
+    addToEnd(list, node);
+}
+typedef struct Cache Cache;
+struct Cache{
+    // doubly linked list representing the order of use of cache lines
+    //least recently used -> most recently used
+    CacheList *list;
+    int nPoints;
+    int maxSize;
+    int occupancy;
+    int hits;
+    int misses;
+    // node pointers representation of the indices represented in the cache
+    // maps indices to cacheList nodes, which maps to location in cache
+    CacheNode **cacheMap;
+};
+Cache* createCache(int nPoints, int numLines){
+    Cache* cache = calloc(1,sizeof(Cache));
+    cache->hits = 0;
+    cache->misses = 0;
+    cache->nPoints = nPoints;
+    cache->maxSize = numLines;
+    cache->occupancy = 0;
+    cache->list = createList();
+    cache->cacheMap = calloc(nPoints,sizeof(CacheNode *));
+    return cache;
+}
+void cacheCall(Cache *cache, int index, int *cacheIndex, bool *compute){
+    CacheNode *requested = cache->cacheMap[index];
+    CacheList *list = cache->list;
+    if(cache->cacheMap[index] == NULL){// cache miss
+        cache->misses++;
+        *compute = true;
+        if(cache->occupancy == cache->maxSize){
+            //move first node to end
+            requested = list->first;
+            moveToEnd(list,requested);
+            //rewrite map, overwriting the lru node and erasing it from the map
+            cache->cacheMap[index] = requested;
+            cache->cacheMap[requested->index] = NULL;
+            int removed = requested->index;
+            requested->index = index;
+//            printf("Overwrote Node with index %d!\n",removed);
+        }else{
+            requested = createCacheNode(cache->occupancy,index);
+            cache->cacheMap[index] = requested;
+            addToEnd(list,requested);
+            cache->occupancy++;
+//            printf("Added node!\n");
+        }
+        *cacheIndex = requested->cacheLineNum;
+    }else{// cache hit
+        cache->hits++;
+        //move to end
+        moveToEnd(list, requested);
+        *cacheIndex = requested->cacheLineNum;
+        *compute = false;
+    }
+//    printf("Last node index: %d\n",cache->list->last->index);
+}
+void cacheTesting(){
+    Cache* cache = createCache(10, 4);
+    int cacheLineNum;
+    bool compute;
+    cacheCall(cache, 9, &cacheLineNum, &compute);
+    cacheCall(cache, 0, &cacheLineNum, &compute);
+    cacheCall(cache, 2, &cacheLineNum, &compute);
+    cacheCall(cache, 2, &cacheLineNum, &compute);
+    cacheCall(cache, 1, &cacheLineNum, &compute);
+    cacheCall(cache, 9, &cacheLineNum, &compute);
+    cacheCall(cache, 3, &cacheLineNum, &compute);
+    printf("%d%d\n",cacheLineNum,compute);
+
+
+}
+int train(int cacheSizeInFloats, float *input_data, int *labels,
             float epsilon, float Ce, float cost, float tolerance,
             int heuristic, int nPoints,  int dFeatures,
             float paramA, float paramB, float paramC,
@@ -103,12 +167,15 @@ int train(float *input_data, int *labels,
             cl_mem d_input_data, cl_mem d_input_data_colmajor, cl_mem d_labels, cl_mem d_trainingAlpha, cl_mem d_kernelDiag, cl_mem d_F,
             cl_mem d_highFsFO, cl_mem d_highIndicesFO, cl_mem d_lowFsFO, cl_mem d_lowIndicesFO,
             cl_mem d_highFsSO1, cl_mem d_highIndicesSO1, cl_mem d_lowFsSO3, cl_mem d_lowIndicesSO3, cl_mem d_deltaFsSO3,
-            cl_mem d_results, cl_mem d_iHighCache,
+            cl_mem d_results, cl_mem d_cache,
             cl_command_queue queue, cl_kernel init, cl_kernel step1, cl_kernel foph1, cl_kernel foph2,
             cl_kernel soph1, cl_kernel soph2, cl_kernel soph3, cl_kernel soph4,
             float *p_rho, int *p_nSV, int *p_iterations,
             float **p_signedAlpha, float **p_supportVectors){
-
+    printf("%d\n",cacheSizeInFloats);
+    int numCacheLines = cacheSizeInFloats/nPoints;
+    Cache *cache = createCache(nPoints,numCacheLines);
+    printf("%d\n",cache->maxSize);
     int err;
     err = 0;
     err |= clSetKernelArg(init, 0, sizeof(cl_mem), &d_input_data);
@@ -175,8 +242,11 @@ int train(float *input_data, int *labels,
     getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
 
     int iteration;
-    bool iHighCompute = true;
-//    clock_t startTot = clock(), diffTot, diffSoph1, diffSoph2, diffSoph3, diffSoph4, diffGetResults;
+    bool iLowCompute;
+    bool iHighCompute;
+    int iLowCacheIndex;
+    int iHighCacheIndex;
+    clock_t startTot = clock(), diffTot, diffSoph1, diffSoph2, diffSoph3, diffSoph4, diffGetResults;
 
     for (iteration = 0; true; iteration++){
 
@@ -186,7 +256,8 @@ int train(float *input_data, int *labels,
         if ((iteration & 0x7ff) == 0) {
             printf("iteration: %d; gap: %f\n",iteration, bLow - bHigh);
         }
-
+        cacheCall(cache,iHigh, &iHighCacheIndex, &iHighCompute);
+        cacheCall(cache,iLow, &iLowCacheIndex, &iLowCompute);
         if (heuristic == 0){
             // Set the arguments to foph1
             //
@@ -272,10 +343,7 @@ int train(float *input_data, int *labels,
             // Set the arguments to soph1
             //
 
-//            clock_t startSoph1 = clock();
-            if(iteration ==1){
-                iHighCompute = false;
-            }
+            clock_t startSoph1 = clock();
             alpha1diff = labels[iHigh] * alpha1diff;
             alpha2diff = labels[iLow] * alpha2diff;
             err = 0;
@@ -298,8 +366,11 @@ int train(float *input_data, int *labels,
             err  |= clSetKernelArg(soph1, 16, sizeof(float), &paramC);
             err  |= clSetKernelArg(soph1, 17, sizeof(int) * localSoph1Size, NULL);
             err  |= clSetKernelArg(soph1, 18, sizeof(float) * localSoph1Size, NULL);
-            err  |= clSetKernelArg(soph1, 19, sizeof(cl_mem), &d_iHighCache);
+            err  |= clSetKernelArg(soph1, 19, sizeof(cl_mem), &d_cache);
             err  |= clSetKernelArg(soph1, 20, sizeof(bool), &iHighCompute);
+            err  |= clSetKernelArg(soph1, 21, sizeof(bool), &iLowCompute);
+            err  |= clSetKernelArg(soph1, 22, sizeof(int), &iHighCacheIndex);
+            err  |= clSetKernelArg(soph1, 23, sizeof(int),&iLowCacheIndex);
 
             if (err != CL_SUCCESS){
                 printf("Error: Failed to set kernel arguments! %d\n", err);
@@ -311,10 +382,10 @@ int train(float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph1!\n");
                 return err;
             }
-//            clFinish(queue);
-//            diffSoph1 = clock() - startSoph1;
+            clFinish(queue);
+            diffSoph1 = clock() - startSoph1;
 
-//            clock_t startSoph2 = clock();
+            clock_t startSoph2 = clock();
 
             // Set the arguments to soph2
             //
@@ -336,14 +407,15 @@ int train(float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph2!\n");
                 return err;
             }
-//            clFinish(queue);
-//            diffSoph2 = clock() - startSoph2;
+            clFinish(queue);
+            diffSoph2 = clock() - startSoph2;
 
             // Set the arguments to soph3
             //
-//            clock_t startSoph3 = clock();
-//            clFinish(queue);
+            clFinish(queue);
             getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
+            clock_t startSoph3 = clock();
+            cacheCall(cache, iHigh, &iHighCacheIndex, &iHighCompute);
 
             err = 0;
             err  = clSetKernelArg(soph3, 0, sizeof(cl_mem), &d_input_data);
@@ -366,7 +438,9 @@ int train(float *input_data, int *labels,
             err  |= clSetKernelArg(soph3, 17, sizeof(float), &paramC);
             err  |= clSetKernelArg(soph3, 18, sizeof(int) * localSoph3Size, NULL);
             err  |= clSetKernelArg(soph3, 19, sizeof(float) * localSoph3Size, NULL);
-            err  |= clSetKernelArg(soph3, 20, sizeof(cl_mem), &d_iHighCache);
+            err  |= clSetKernelArg(soph3, 20, sizeof(cl_mem), &d_cache);
+            err  |= clSetKernelArg(soph3, 21, sizeof(bool), &iHighCompute);
+            err  |= clSetKernelArg(soph3, 22, sizeof(int), &iHighCacheIndex);
 
 
 
@@ -380,12 +454,12 @@ int train(float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph3!\n");
                 return err;
             }
-//            clFinish(queue);
-//            diffSoph3 = clock() - startSoph3;
+            clFinish(queue);
+            diffSoph3 = clock() - startSoph3;
 
             // Set the arguments to soph4
             //
-//            clock_t startSoph4 = clock();
+            clock_t startSoph4 = clock();
 
             err = 0;
             err  = clSetKernelArg(soph4, 0, sizeof(cl_mem), &d_input_data);
@@ -416,8 +490,8 @@ int train(float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph4!\n");
                 return err;
             }
-//            clFinish(queue);
-//            diffSoph4 = clock() - startSoph4;
+            clFinish(queue);
+            diffSoph4 = clock() - startSoph4;
 
             // Wait for the command queue to get serviced before reading back results
             //
@@ -438,19 +512,19 @@ int train(float *input_data, int *labels,
     }
     printf("INFO: %d iterations\n", iteration);
     printf("INFO: bLow: %f, bHigh %f\n", bLow, bHigh);
-//    diffTot = clock() - startTot;
-//    float msecTot = diffTot * 1000.0 / CLOCKS_PER_SEC;
-//    printf("Total time taken %.3f milliseconds\n", msecTot);
-//    float msecSoph1 = diffSoph1 * 1000.0 / CLOCKS_PER_SEC;
-//    printf("Soph1 time taken %.3f milliseconds\n", msecSoph1);
-//    float msecSoph2 = diffSoph2 * 1000.0 / CLOCKS_PER_SEC;
-//    printf("Soph2 time taken %.3f milliseconds\n", msecSoph2);
-//    float msecSoph3 = diffSoph3 * 1000.0 / CLOCKS_PER_SEC;
-//    printf("Soph3 time taken %.3f milliseconds\n", msecSoph3);
-//    float msecSoph4 = diffSoph4 * 1000.0 / CLOCKS_PER_SEC;
-//    printf("Soph4 time taken %.3f milliseconds\n", msecSoph4);
+    diffTot = clock() - startTot;
+    float msecTot = diffTot * 1000.0 / CLOCKS_PER_SEC;
+    printf("Total time taken %.5f milliseconds\n", msecTot);
+    float msecSoph1 = diffSoph1 * 1000.0 / CLOCKS_PER_SEC;
+    printf("Soph1 time taken %.5f milliseconds\n", msecSoph1);
+    float msecSoph2 = diffSoph2 * 1000.0 / CLOCKS_PER_SEC;
+    printf("Soph2 time taken %.5f milliseconds\n", msecSoph2);
+    float msecSoph3 = diffSoph3 * 1000.0 / CLOCKS_PER_SEC;
+    printf("Soph3 time taken %.5f milliseconds\n", msecSoph3);
+    float msecSoph4 = diffSoph4 * 1000.0 / CLOCKS_PER_SEC;
+    printf("Soph4 time taken %.5f milliseconds\n", msecSoph4);
 //    float msecGetResults = diffGetResults * 1000.0 / CLOCKS_PER_SEC;
-//    printf("GetResult time taken %.3f milliseconds\n", msecGetResults);
+//    printf("GetResult time taken %.5f milliseconds\n", msecGetResults);
     // get training alpha
     float *trainingAlpha = (float *)malloc(sizeof(float) * nPoints);
 
@@ -482,6 +556,8 @@ int train(float *input_data, int *labels,
     }
     // Shutdown and cleanup
     //
+    printf("%d Cache Hits!\n",cache->hits);
+    printf("%d Cache Misses!\n",cache->misses);
     return 0;
 }
 void getResults(cl_command_queue queue, cl_mem d_results, float results[8], float* bLow, float *bHigh,

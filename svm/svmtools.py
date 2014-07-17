@@ -18,7 +18,6 @@ def read_data(in_file_name):
     labels = np.asarray(prob_y, dtype=np.int32)
     N = len(prob_y)
     D = (int)(max([max(dict.keys()) for dict in prob_x]))
-    print D
     input_data = np.zeros((N,D),dtype=np.float32 )
     for idx, dict in enumerate(prob_x):
         for key, val in dict.iteritems():

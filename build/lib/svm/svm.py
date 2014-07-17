@@ -177,10 +177,6 @@ class OclTrain(LazySpecializedFunction):
         return conf
     def transform(self, tree, program_config):
 
-        # deviceInfoPath = os.path.join(os.getcwd(), "..", "templates", "device_info.h")
-        # deviceInfo = CFile("device_info",[
-        #     FileTemplate(deviceInfoPath, {})
-        # ])
         kernelPath = os.path.join(os.getcwd(), "..", "templates","trainingkernels.tmpl.c")
         kernelInserts = {
             "kernelFunc": SymbolRef(self.kernelFunc),
