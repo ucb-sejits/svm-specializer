@@ -16,6 +16,7 @@ setup(
         'ctree',
         'matplotlib',
         'sklearn',
+        'pylab',
     ]
 )
 
