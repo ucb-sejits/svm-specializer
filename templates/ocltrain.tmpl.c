@@ -15,7 +15,7 @@
 
 void getResults(cl_command_queue queue, cl_mem d_results, float *results, float* bLow, float *bHigh,
                 int *iLow, int *iHigh, float *alpha1diff, float *alpha2diff);
-
+//Cache Stuff
 typedef struct CacheNode CacheNode;
 struct CacheNode{
     CacheNode *prev;
@@ -150,8 +150,52 @@ void cacheTesting(){
     cacheCall(cache, 9, &cacheLineNum, &compute);
     cacheCall(cache, 3, &cacheLineNum, &compute);
     printf("%d%d\n",cacheLineNum,compute);
+}
 
-
+// Controller Stuff
+typedef struct Controller Controller;
+struct Controller{
+    int counter;
+    int epoch;
+    int samplingPeriod;
+    clock_t time_i;
+    float gap_i;
+    float rate1;
+    float rate2;
+    int heuristic;
+};
+Controller *createController(float initialGap, int samplingPeriod, int nPoints){
+    Controller *controller = calloc(1,sizeof(Controller));
+    controller->counter = 0;
+    controller->epoch = nPoints/20;
+    controller->samplingPeriod = samplingPeriod;
+    controller->time_i = clock();
+    controller->gap_i = initialGap;
+    controller->rate1 = 0.0f;
+    controller->rate2 = 0.0f;
+    controller->heuristic = 1;
+    return controller;
+}
+void addIteration(Controller* c, float gap){
+    c->counter++;
+    //do sampling for first order
+    if(c->counter % c->epoch == 0){
+        c->gap_i = gap;
+        c->time_i = clock();
+        c->heuristic = 0;
+    }else if(c->counter % c->epoch == c->samplingPeriod){
+        clock_t time_diff = clock() - c->time_i;
+        c->rate1 = (gap - c->gap_i)/(c->gap_i)*1000000/(clock() - c->time_i);
+        c->gap_i = gap;
+        c->time_i = clock();
+        c->heuristic = 1;
+    }else if(c->counter % c->epoch == 2*(c->samplingPeriod)){
+        c->rate2 = (gap - c->gap_i)/(c->gap_i)*1000000/(clock() - c->time_i);
+        c->heuristic = (c->rate1 < c->rate2 ?0:1);
+//        printf("rate1: %f\n",c->rate1);
+//        printf("rate2: %f\n",c->rate2);
+//        printf("heuristic chosen: %d\n", c->heuristic);
+    }
 }
 int train(int cacheSizeInFloats, float *input_data, int *labels,
             float epsilon, float Ce, float cost, float tolerance,
@@ -172,10 +216,9 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
             cl_kernel soph1, cl_kernel soph2, cl_kernel soph3, cl_kernel soph4,
             float *p_rho, int *p_nSV, int *p_iterations,
             float **p_signedAlpha, float **p_supportVectors){
-    printf("%d\n",cacheSizeInFloats);
     int numCacheLines = cacheSizeInFloats/nPoints;
     Cache *cache = createCache(nPoints,numCacheLines);
-    printf("%d\n",cache->maxSize);
+    Controller *progress = createController(2.0, 64 ,nPoints);
     int err;
     err = 0;
     err |= clSetKernelArg(init, 0, sizeof(cl_mem), &d_input_data);
@@ -246,10 +289,15 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
     bool iHighCompute;
     int iLowCacheIndex;
     int iHighCacheIndex;
-    clock_t startTot = clock(), diffTot, diffSoph1, diffSoph2, diffSoph3, diffSoph4, diffGetResults;
+    int currentHeuristic;
+//    clock_t startTot = clock(), diffTot, diffSoph1, diffSoph2, diffSoph3, diffSoph4, diffGetResults;
 
     for (iteration = 0; true; iteration++){
-
+        if(heuristic == 2){
+            currentHeuristic = progress->heuristic;
+        }else{
+            currentHeuristic = heuristic;
+        }
         if(bLow <= bHigh + 2 * tolerance){
             break;
         }
@@ -258,7 +306,9 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
         }
         cacheCall(cache,iHigh, &iHighCacheIndex, &iHighCompute);
         cacheCall(cache,iLow, &iLowCacheIndex, &iLowCompute);
-        if (heuristic == 0){
+        alpha1diff = labels[iHigh] * alpha1diff;
+        alpha2diff = labels[iLow] * alpha2diff;
+        if (currentHeuristic == 0){
             // Set the arguments to foph1
             //
 
@@ -284,6 +334,11 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
             err  |= clSetKernelArg(foph1, 18, sizeof(float), &paramC);
             err  |= clSetKernelArg(foph1, 19, sizeof(int) * localFoph1Size, NULL);
             err  |= clSetKernelArg(foph1, 20, sizeof(float) * localFoph1Size, NULL);
+            err  |= clSetKernelArg(foph1, 21, sizeof(cl_mem), &d_cache);
+            err  |= clSetKernelArg(foph1, 22, sizeof(bool), &iHighCompute);
+            err  |= clSetKernelArg(foph1, 23, sizeof(bool), &iLowCompute);
+            err  |= clSetKernelArg(foph1, 24, sizeof(int), &iHighCacheIndex);
+            err  |= clSetKernelArg(foph1, 25, sizeof(int),&iLowCacheIndex);
 
             if (err != CL_SUCCESS){
                 printf("Error: Failed to set kernel arguments! %d\n", err);
@@ -343,9 +398,7 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
             // Set the arguments to soph1
             //
 
-            clock_t startSoph1 = clock();
-            alpha1diff = labels[iHigh] * alpha1diff;
-            alpha2diff = labels[iLow] * alpha2diff;
+//            clock_t startSoph1 = clock();
             err = 0;
             err  = clSetKernelArg(soph1, 0, sizeof(cl_mem), &d_input_data);
             err  |= clSetKernelArg(soph1, 1, sizeof(cl_mem), &d_labels);
@@ -382,10 +435,10 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph1!\n");
                 return err;
             }
-            clFinish(queue);
-            diffSoph1 = clock() - startSoph1;
+//            clFinish(queue);
+//            diffSoph1 = clock() - startSoph1;
 
-            clock_t startSoph2 = clock();
+//            clock_t startSoph2 = clock();
 
             // Set the arguments to soph2
             //
@@ -407,14 +460,14 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph2!\n");
                 return err;
             }
-            clFinish(queue);
-            diffSoph2 = clock() - startSoph2;
+//            clFinish(queue);
+//            diffSoph2 = clock() - startSoph2;
 
             // Set the arguments to soph3
             //
             clFinish(queue);
             getResults(queue, d_results, results, &bLow, &bHigh, &iLow, &iHigh, &alpha1diff, &alpha2diff);
-            clock_t startSoph3 = clock();
+//            clock_t startSoph3 = clock();
             cacheCall(cache, iHigh, &iHighCacheIndex, &iHighCompute);
 
             err = 0;
@@ -454,12 +507,12 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph3!\n");
                 return err;
             }
-            clFinish(queue);
-            diffSoph3 = clock() - startSoph3;
+//            clFinish(queue);
+//            diffSoph3 = clock() - startSoph3;
 
             // Set the arguments to soph4
             //
-            clock_t startSoph4 = clock();
+//            clock_t startSoph4 = clock();
 
             err = 0;
             err  = clSetKernelArg(soph4, 0, sizeof(cl_mem), &d_input_data);
@@ -490,8 +543,8 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
                 printf("Error: Failed to execute kernel Soph4!\n");
                 return err;
             }
-            clFinish(queue);
-            diffSoph4 = clock() - startSoph4;
+//            clFinish(queue);
+//            diffSoph4 = clock() - startSoph4;
 
             // Wait for the command queue to get serviced before reading back results
             //
@@ -508,21 +561,23 @@ int train(int cacheSizeInFloats, float *input_data, int *labels,
 //            diffGetResults = clock() - startGetResults;
             //printf("iLow:%d, iHigh:%d\n", (int)results[2], (int)results[3]);
         }
-
+        if(heuristic == 2){
+            addIteration(progress, bLow - bHigh);
+        }
     }
     printf("INFO: %d iterations\n", iteration);
     printf("INFO: bLow: %f, bHigh %f\n", bLow, bHigh);
-    diffTot = clock() - startTot;
-    float msecTot = diffTot * 1000.0 / CLOCKS_PER_SEC;
-    printf("Total time taken %.5f milliseconds\n", msecTot);
-    float msecSoph1 = diffSoph1 * 1000.0 / CLOCKS_PER_SEC;
-    printf("Soph1 time taken %.5f milliseconds\n", msecSoph1);
-    float msecSoph2 = diffSoph2 * 1000.0 / CLOCKS_PER_SEC;
-    printf("Soph2 time taken %.5f milliseconds\n", msecSoph2);
-    float msecSoph3 = diffSoph3 * 1000.0 / CLOCKS_PER_SEC;
-    printf("Soph3 time taken %.5f milliseconds\n", msecSoph3);
-    float msecSoph4 = diffSoph4 * 1000.0 / CLOCKS_PER_SEC;
-    printf("Soph4 time taken %.5f milliseconds\n", msecSoph4);
+//    diffTot = clock() - startTot;
+//    float msecTot = diffTot * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Total time taken %.5f milliseconds\n", msecTot);
+//    float msecSoph1 = diffSoph1 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph1 time taken %.5f milliseconds\n", msecSoph1);
+//    float msecSoph2 = diffSoph2 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph2 time taken %.5f milliseconds\n", msecSoph2);
+//    float msecSoph3 = diffSoph3 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph3 time taken %.5f milliseconds\n", msecSoph3);
+//    float msecSoph4 = diffSoph4 * 1000.0 / CLOCKS_PER_SEC;
+//    printf("Soph4 time taken %.5f milliseconds\n", msecSoph4);
 //    float msecGetResults = diffGetResults * 1000.0 / CLOCKS_PER_SEC;
 //    printf("GetResult time taken %.5f milliseconds\n", msecGetResults);
     // get training alpha

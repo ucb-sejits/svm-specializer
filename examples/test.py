@@ -30,7 +30,9 @@ def main():
     X = X.astype(np.float32)
     y = y.astype(np.int32)
     A, b= read_data("a9a.svm")
-
+    C = A[:15000][:]
+    d = b[:15000]
+    # C, d = read_data("australian.svm")
     #
     # print('Python implementation:')
     # with Timer() as python:
@@ -38,21 +40,26 @@ def main():
     #     svm.train(X,y,'linear',heuristicMethod=0, pythonOnly=True, tolerance=0.01)
     #
     # # plot_svm2d(X,y,svm, 'Iris Data Set Python')
-    # print('OCL Implementation:')
+    print('OCL Implementation:')
     with Timer() as uncached:
-        svm.train(A[:10000][:],b[:10000],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
-    print "%.6f" %svm.rho
-    with Timer() as cached:
-        svm.train(A[:10000][:],b[:10000],'gaussian',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
-    # print "%.6f" % svm.rho
-    Xlist = A.tolist()
-    ylist = b.tolist()
+        svm.train(C,d,'linear',heuristicMethod = 2,pythonOnly=False, tolerance=0.001)
+    with Timer() as cached0:
+        svm.train(C,d,'linear',heuristicMethod = 0,pythonOnly=False, tolerance=0.001)
+    with Timer() as cached1:
+        svm.train(C,d,'linear',heuristicMethod = 1,pythonOnly=False, tolerance=0.001)
+    with Timer() as cached2:
+        svm.train(C,d,'linear',heuristicMethod = 2,pythonOnly=False, tolerance=0.001)
+    print "%.6f" % svm.rho
+    Xlist = C.tolist()
+    ylist = d.tolist()
     with Timer() as LIBSVM:
-        svm_train(ylist[:10000], Xlist[:][:10000], '-c 10 -t 2 -e 0.001')
+        svm_train(ylist, Xlist, '-c 10 -t 0 -e 0.001')
 
     # print "Python time: %.6f s" % python.interval
-    print "Uncached OpenCL time (with compile): %.6f s" % uncached.interval
-    print "Cached OpenCL time (without compile): %.6f s" % cached.interval
+    # print "Uncached OpenCL time First Order (with compile): %.6f s" % uncached.interval
+    # print "Cached OpenCL time First Order (without compile): %.6f s" % cached0.interval
+    # print "Cached OpenCL time Second Order (without compile): %.6f s" % cached1.interval
+    # print "Cached OpenCL time Adaptive (without compile): %.6f s" % cached2.interval
     print "LibSVM time: %.6f s" % LIBSVM.interval
 
     # plot_svm2d(X,y,svm, 'Iris Data Set OpenCL')
